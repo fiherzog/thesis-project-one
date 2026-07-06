@@ -13,12 +13,13 @@ from os import environ
 #   - `condition` and `wave` come from session config, never from the client.
 #   - The Anthropic API key is read server-side only (see formation app).
 #
-# Phase 1 status: only the condition-1 (control) x wave-1 config is wired up,
-# because conditions 2-4 need the AI-assist (Phase 2) and disclosure
-# (Phase 3) apps, and wave 2 needs the `recontact`/`survey2`/`debrief` apps
-# (Phase 4/6). Adding a SESSION_CONFIGS entry for an app_sequence that
-# doesn't exist yet would break devserver startup, so configs are added
-# incrementally as each phase's apps land.
+# Phase 3 status: all four wave-1 conditions are now wired up (cond1 =
+# control, cond2 = AI-assist/no disclosure UI, cond3 = AI-assist/disclosed,
+# cond4 = AI-assist/undisclosed -- see formation app for the badge logic).
+# Wave 2 still needs the `recontact`/`survey2`/`debrief` apps (Phase 4/6);
+# adding a SESSION_CONFIGS entry for an app_sequence that doesn't exist yet
+# would break devserver startup, so those configs are added once Phase 4
+# lands.
 # ---------------------------------------------------------------------------
 
 SESSION_CONFIG_DEFAULTS = dict(
@@ -54,6 +55,28 @@ SESSION_CONFIGS = [
         num_demo_participants=6,
         condition=2,
         wave=1,
+    ),
+    dict(
+        name='cond3_wave1',
+        display_name='Condition 3 (AI-assist, disclosed) -- Wave 1',
+        app_sequence=['intro', 'formation', 'survey1'],
+        num_demo_participants=6,
+        condition=3,
+        wave=1,
+        # Sender-side half of the cond3-vs-cond4 manipulation (spec
+        # Section 7 / Decision G): cond3 senders are told their
+        # AI-assisted messages will be labeled to the recipient.
+        sender_disclosure_cue=True,
+    ),
+    dict(
+        name='cond4_wave1',
+        display_name='Condition 4 (AI-assist, undisclosed) -- Wave 1',
+        app_sequence=['intro', 'formation', 'survey1'],
+        num_demo_participants=6,
+        condition=4,
+        wave=1,
+        # sender_disclosure_cue left at its default (False): the badge
+        # never shows in cond4, so there's nothing to cue the sender about.
     ),
 ]
 

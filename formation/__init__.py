@@ -29,21 +29,23 @@ CORE INVARIANTS (restated per phase so they don't drift):
     and Wave 2 sessions (Phase 4 adds the Wave 2 session type; no
     formation code should need to change for that).
 
-PHASE STATUS: this is the Phase 2 (AI-assist) version.
+PHASE STATUS: this is the Phase 3 (disclosure) version. All four
+conditions now exist.
   - Messaging + persistent threads: done (Phase 1).
   - Explicit tie tracking (connect / connect_remove): done (Phase 1).
     Behavioral ties (>=3 messages each way) are NOT computed live -- per
     spec Section 9 they are derived offline from the Message table at
     analysis time.
   - AI-assist (ai_draft branch, AIEvent, provenance snapshot fields on
-    Message): done this phase. Condition gating: conditions 2-4 have
+    Message): done Phase 2. Condition gating: conditions 2-4 have
     AI-assist enabled, condition 1 (control) does not -- see
     ASSIST_ENABLED_CONDITIONS below. This condition->feature mapping is a
     build-time assumption (documented in the Phase 2 section of this
     docstring) since the exact condition numbering wasn't restated in
     every phase of the spec; adjust ASSIST_ENABLED_CONDITIONS if the
     study's actual condition numbering differs.
-  - Disclosure badge (ai_badge_shown, recipient-visible cue): Phase 3.
+  - Disclosure badge (ai_badge_shown, recipient-visible cue): done this
+    phase -- see PHASE 3 NOTES below.
   - Diffusion mechanic (Exposure/Adoption): Phase 4.
 
 PHASE 2 NOTES (AI-assist):
@@ -67,6 +69,33 @@ PHASE 2 NOTES (AI-assist):
     them for that compose action. The server diffs the sent text against
     that draft to classify provenance/acceptance and compute edit_distance
     / pct_retained -- see `compute_provenance`.
+
+PHASE 3 NOTES (disclosure badge, spec Section 7):
+  - The badge is presentation-only and is recomputed server-side, every
+    time, from `condition` + `Message.provenance` -- the client is never
+    trusted to say whether a message should show the AI badge.
+    `ai_badge_for(recipient, msg)` is the single source of truth: only
+    condition 3 (disclosed) ever returns True, and only for messages
+    whose provenance is 'ai_assisted'. Condition 4 (undisclosed) and
+    condition 2 (available/un-manipulated, no disclosure UI at all) never
+    show a badge, regardless of provenance.
+  - The badge is computed once, at push time (when the message is
+    delivered to its recipient in the 'send' branch), and the result is
+    stored on `Message.ai_badge_shown` so re-loading thread history later
+    reflects exactly what the recipient actually saw at the time, rather
+    than being recomputed against whatever the *viewer's* condition
+    happens to be when they reload (this matters because a thread mixes
+    messages sent by both participants, and only the message's actual
+    recipient should ever see its badge).
+  - The condition-3-vs-4 manipulation also has a sender-side component
+    (spec Decision G / Section 7): does the sender know in advance that
+    their AI-assisted messages will be labeled to the recipient? That is
+    carried by the `sender_disclosure_cue` boolean session-config flag
+    (see settings.py), passed to the template via vars_for_template and
+    rendered as a single line of copy near the AI-assist button -- kept
+    deliberately minimal per the spec's "keep the difference minimal"
+    instruction, since the cue itself is not supposed to be a second,
+    uncontrolled manipulation.
 """
 
 
@@ -146,7 +175,7 @@ class Message(ExtraModel):
     acceptance = models.StringField()
     compose_time_ms = models.IntegerField()
     paste_detected = models.BooleanField()
-    ai_badge_shown = models.BooleanField()  # populated starting Phase 3
+    ai_badge_shown = models.BooleanField()  # spec Section 7; see ai_badge_for()
     ts = models.FloatField()
 
 
@@ -247,6 +276,7 @@ def load_thread(player: Player, peer_id: int):
     matching = sorted(
         [m for m in rows if m.thread_id == tid], key=lambda m: m.ts
     )
+    my_id_str = str(player.id_in_group)
     return {
         'type': 'thread_history',
         'peer': peer_id,
@@ -255,6 +285,11 @@ def load_thread(player: Player, peer_id: int):
                 'sender': m.player.id_in_group,
                 'body': m.sent_text,
                 'ts': m.ts,
+                # Ground truth is whatever was computed/stored at push
+                # time (see ai_badge_for); only ever surfaced to the
+                # message's actual recipient, never to the sender's own
+                # view of their own sent message.
+                'ai_badge_shown': bool(m.ai_badge_shown) if m.recipient_id == my_id_str else False,
             }
             for m in matching
         ],
@@ -263,6 +298,15 @@ def load_thread(player: Player, peer_id: int):
 
 def assist_enabled(player: Player) -> bool:
     return player.session.config['condition'] in C.ASSIST_ENABLED_CONDITIONS
+
+
+def ai_badge_for(recipient: Player, msg: 'Message') -> bool:
+    """Spec Section 7: presentation-only, recomputed server-side from
+    `condition` + `msg.provenance` every time -- never trust the client
+    for this. Only condition 3 (disclosed) ever labels a message, and
+    only when that message was actually ai_assisted."""
+    cond = recipient.session.config['condition']
+    return cond == 3 and msg.provenance == 'ai_assisted'
 
 
 def ai_calls_used(player: Player) -> int:
@@ -434,7 +478,10 @@ def record_message(player: Player, data: dict) -> Message:
         acceptance=prov['acceptance'],
         compose_time_ms=int(data.get('compose_time_ms', 0)),
         paste_detected=bool(data.get('paste_detected', False)),
-        ai_badge_shown=False,  # populated starting Phase 3
+        # Placeholder -- immediately overwritten by the 'send' live_method
+        # branch, which computes the real value via ai_badge_for() once
+        # the recipient (and thus their condition) is known.
+        ai_badge_shown=False,
         ts=now_ms(),
     )
     log_event(player, 'message_sent', target_id=peer_id, payload={'len': len(text), 'provenance': prov['provenance']})
@@ -491,6 +538,10 @@ class Formation(Page):
         return {
             'my_handle': player_handle(player),
             'assist_enabled': assist_enabled(player),
+            # Sender-side half of the condition-3-vs-4 manipulation (spec
+            # Section 7 / Decision G): whether the sender is told their
+            # AI-assisted messages will be labeled to the recipient.
+            'sender_disclosure_cue': player.session.config['sender_disclosure_cue'],
         }
 
     @staticmethod
@@ -511,11 +562,20 @@ class Formation(Page):
         if t == 'send':
             msg = record_message(player, data)
             recipient = player.group.get_player_by_id(int(msg.recipient_id))
+            # Disclosure badge (spec Section 7): computed once, here, at
+            # push time, from the recipient's own condition + the
+            # message's provenance -- then persisted on the Message row
+            # so a later thread reload shows exactly what was actually
+            # disclosed, not a recomputation against whatever condition
+            # the *viewer* happens to be in at reload time.
+            badge = ai_badge_for(recipient, msg)
+            msg.ai_badge_shown = badge
             payload = {
                 'type': 'incoming',
                 'peer': player.id_in_group,
                 'body': msg.sent_text,
                 'ts': msg.ts,
+                'ai_badge_shown': badge,
             }
             ack = {
                 'type': 'ack',

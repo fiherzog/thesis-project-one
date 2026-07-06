@@ -18,6 +18,8 @@
   #composer { width: 100%; height: 70px; }
   #ai-status { font-size: 0.85em; color: #666; min-height: 1.2em; }
   #ai-draft-btn.loading { opacity: 0.6; }
+  #sender-disclosure-cue { font-size: 0.8em; color: #666; margin-top: 0.2rem; }
+  .msg .ai-badge { display: inline-block; font-size: 0.7em; color: #555; background: #fff3cd; border-radius: 4px; padding: 0 0.3rem; margin-left: 0.4rem; vertical-align: middle; }
 </style>
 {% endblock %}
 
@@ -39,6 +41,9 @@
     </div>
     {% if assist_enabled %}
     <div id="ai-status"></div>
+    {% endif %}
+    {% if assist_enabled and sender_disclosure_cue %}
+    <div id="sender-disclosure-cue">Note: if you use AI-assist, your recipient will see that this message was AI-assisted.</div>
     {% endif %}
   </div>
 </div>
@@ -99,10 +104,20 @@ function openThread(peerId, peerHandle) {
   liveSend({type: 'open_thread', peer: peerId});
 }
 
-function appendMessage(senderId, body) {
+function appendMessage(senderId, body, badgeShown) {
   var div = document.createElement('div');
   div.className = 'msg ' + (senderId === myId ? 'mine' : 'theirs');
-  div.textContent = body;
+  var textSpan = document.createElement('span');
+  textSpan.textContent = body;
+  div.appendChild(textSpan);
+  // Disclosure badge (spec Section 7): condition 3 only, server-computed
+  // and never trusted from anywhere else -- just rendered here as-is.
+  if (badgeShown) {
+    var badge = document.createElement('span');
+    badge.className = 'ai-badge';
+    badge.textContent = 'AI-assisted';
+    div.appendChild(badge);
+  }
   el('thread-messages').appendChild(div);
   el('thread-messages').scrollTop = el('thread-messages').scrollHeight;
 }
@@ -112,9 +127,9 @@ function liveRecv(data) {
     renderDirectory(data.players);
   } else if (data.type === 'thread_history') {
     el('thread-messages').innerHTML = '';
-    data.messages.forEach(function (m) { appendMessage(m.sender, m.body); });
+    data.messages.forEach(function (m) { appendMessage(m.sender, m.body, m.ai_badge_shown); });
   } else if (data.type === 'incoming') {
-    if (data.peer === currentPeer) appendMessage(data.peer, data.body);
+    if (data.peer === currentPeer) appendMessage(data.peer, data.body, data.ai_badge_shown);
   } else if (data.type === 'ack') {
     if (data.peer === currentPeer) appendMessage(myId, data.body);
   } else if (data.type === 'connect_ack') {
