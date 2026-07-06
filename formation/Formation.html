@@ -16,6 +16,8 @@
   .msg.mine { background: #d1e7ff; margin-left: auto; text-align: right; }
   .msg.theirs { background: #eee; }
   #composer { width: 100%; height: 70px; }
+  #ai-status { font-size: 0.85em; color: #666; min-height: 1.2em; }
+  #ai-draft-btn.loading { opacity: 0.6; }
 </style>
 {% endblock %}
 
@@ -31,7 +33,13 @@
     <textarea id="composer" placeholder="Type a message..."></textarea>
     <div>
       <button type="button" id="send-btn">Send</button>
+      {% if assist_enabled %}
+      <button type="button" id="ai-draft-btn">Draft with AI</button>
+      {% endif %}
     </div>
+    {% if assist_enabled %}
+    <div id="ai-status"></div>
+    {% endif %}
   </div>
 </div>
 {% endblock %}
@@ -41,6 +49,10 @@
 var myId = {{ player.id_in_group }};
 var currentPeer = null;
 var composeStartedAt = null;
+// Text of the last AI draft shown for the *current* compose action (if
+// any), so the server can classify provenance/acceptance on send. Cleared
+// whenever the participant switches threads or after a message is sent.
+var lastAiDraft = '';
 
 function el(id) { return document.getElementById(id); }
 
@@ -82,6 +94,8 @@ function openThread(peerId, peerHandle) {
   });
   el('thread-title').textContent = 'Thread with ' + (peerHandle || ('P' + peerId));
   el('thread-messages').innerHTML = '<em>Loading history...</em>';
+  lastAiDraft = '';
+  if (el('ai-status')) el('ai-status').textContent = '';
   liveSend({type: 'open_thread', peer: peerId});
 }
 
@@ -105,6 +119,17 @@ function liveRecv(data) {
     if (data.peer === currentPeer) appendMessage(myId, data.body);
   } else if (data.type === 'connect_ack') {
     liveSend({type: 'directory'});
+  } else if (data.type === 'ai_result') {
+    var btn = el('ai-draft-btn');
+    if (btn) btn.classList.remove('loading');
+    if (data.ok) {
+      lastAiDraft = data.text;
+      el('composer').value = data.text;
+      composeStartedAt = composeStartedAt || Date.now();
+      if (el('ai-status')) el('ai-status').textContent = '';
+    } else if (el('ai-status')) {
+      el('ai-status').textContent = data.error || 'AI-assist failed.';
+    }
   } else if (data.type === 'error') {
     console.error(data.message);
   }
@@ -127,11 +152,26 @@ el('send-btn').onclick = function () {
     body: text,
     compose_time_ms: composeTimeMs,
     paste_detected: pasteDetected,
+    ai_draft_text: lastAiDraft,
   });
   el('composer').value = '';
   composeStartedAt = null;
   pasteDetected = false;
+  lastAiDraft = '';
 };
+
+if (el('ai-draft-btn')) {
+  el('ai-draft-btn').onclick = function () {
+    if (currentPeer === null) return;
+    el('ai-draft-btn').classList.add('loading');
+    if (el('ai-status')) el('ai-status').textContent = 'Drafting...';
+    liveSend({
+      type: 'ai_draft',
+      peer: currentPeer,
+      instruction: el('composer').value.trim() || 'Draft a friendly opening message.',
+    });
+  };
+}
 
 liveSend({type: 'directory'});
 </script>

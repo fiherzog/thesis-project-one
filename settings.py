@@ -47,6 +47,14 @@ SESSION_CONFIGS = [
         condition=1,
         wave=1,
     ),
+    dict(
+        name='cond2_wave1',
+        display_name='Condition 2 (AI-assist, no disclosure) -- Wave 1',
+        app_sequence=['intro', 'formation', 'survey1'],
+        num_demo_participants=6,
+        condition=2,
+        wave=1,
+    ),
 ]
 
 PARTICIPANT_FIELDS = [
