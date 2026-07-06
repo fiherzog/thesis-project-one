@@ -1,0 +1,16 @@
+{% extends 'otree/Page.html' %}
+
+{% block title %}How this session works{% endblock %}
+
+{% block content %}
+<div>
+  <ul>
+    <li>You'll see a directory of the other participants in this session on the left.</li>
+    <li>Click a name to open a private thread and exchange messages live.</li>
+    <li>You can send a "connect" request to participants you'd like to stay in touch with.</li>
+    <li>The session runs for a fixed amount of time; a timer is shown at the top of the page.</li>
+  </ul>
+  <p>Click below when you're ready to begin.</p>
+  {% next_button %}
+</div>
+{% endblock %}

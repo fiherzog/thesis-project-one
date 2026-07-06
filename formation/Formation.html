@@ -1,0 +1,138 @@
+{% extends 'otree/Page.html' %}
+
+{% block title %}Live session{% endblock %}
+
+{% block styles %}
+<style>
+  .spike-wrap { display: flex; gap: 1.5rem; }
+  #directory { width: 220px; border-right: 1px solid #ccc; padding-right: 1rem; }
+  #directory .directory-row { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.4rem; }
+  #directory .directory-row button.peer-btn { flex: 1; text-align: left; }
+  #directory .directory-row button.peer-btn.active { font-weight: bold; background: #e8f0fe; }
+  #directory .connect-btn { font-size: 0.75em; }
+  #main-pane { flex: 1; }
+  #thread-messages { border: 1px solid #ccc; min-height: 250px; padding: 0.5rem; margin-bottom: 0.5rem; overflow-y: auto; max-height: 350px; }
+  .msg { margin-bottom: 0.4rem; padding: 0.4rem 0.6rem; border-radius: 6px; max-width: 75%; }
+  .msg.mine { background: #d1e7ff; margin-left: auto; text-align: right; }
+  .msg.theirs { background: #eee; }
+  #composer { width: 100%; height: 70px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="spike-wrap">
+  <div id="directory">
+    <h4>Directory (you: {{ my_handle }})</h4>
+    <div id="directory-list">Loading...</div>
+  </div>
+  <div id="main-pane">
+    <h4 id="thread-title">Select someone from the directory to start a thread</h4>
+    <div id="thread-messages"></div>
+    <textarea id="composer" placeholder="Type a message..."></textarea>
+    <div>
+      <button type="button" id="send-btn">Send</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var myId = {{ player.id_in_group }};
+var currentPeer = null;
+var composeStartedAt = null;
+
+function el(id) { return document.getElementById(id); }
+
+function renderDirectory(players) {
+  var list = el('directory-list');
+  list.innerHTML = '';
+  players.forEach(function (p) {
+    var row = document.createElement('div');
+    row.className = 'directory-row';
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'peer-btn';
+    btn.textContent = p.handle;
+    btn.dataset.peerId = p.id;
+    btn.onclick = function () { openThread(p.id, p.handle); };
+    row.appendChild(btn);
+
+    var connectBtn = document.createElement('button');
+    connectBtn.type = 'button';
+    connectBtn.className = 'connect-btn';
+    connectBtn.dataset.peerId = p.id;
+    connectBtn.textContent = p.connected ? 'Remove' : 'Connect';
+    connectBtn.onclick = function () { toggleConnect(p.id, p.connected); };
+    row.appendChild(connectBtn);
+
+    list.appendChild(row);
+  });
+}
+
+function toggleConnect(peerId, currentlyConnected) {
+  liveSend({type: currentlyConnected ? 'connect_remove' : 'connect', peer: peerId});
+}
+
+function openThread(peerId, peerHandle) {
+  currentPeer = peerId;
+  document.querySelectorAll('#directory-list .peer-btn').forEach(function (b) {
+    b.classList.toggle('active', Number(b.dataset.peerId) === peerId);
+  });
+  el('thread-title').textContent = 'Thread with ' + (peerHandle || ('P' + peerId));
+  el('thread-messages').innerHTML = '<em>Loading history...</em>';
+  liveSend({type: 'open_thread', peer: peerId});
+}
+
+function appendMessage(senderId, body) {
+  var div = document.createElement('div');
+  div.className = 'msg ' + (senderId === myId ? 'mine' : 'theirs');
+  div.textContent = body;
+  el('thread-messages').appendChild(div);
+  el('thread-messages').scrollTop = el('thread-messages').scrollHeight;
+}
+
+function liveRecv(data) {
+  if (data.type === 'directory') {
+    renderDirectory(data.players);
+  } else if (data.type === 'thread_history') {
+    el('thread-messages').innerHTML = '';
+    data.messages.forEach(function (m) { appendMessage(m.sender, m.body); });
+  } else if (data.type === 'incoming') {
+    if (data.peer === currentPeer) appendMessage(data.peer, data.body);
+  } else if (data.type === 'ack') {
+    if (data.peer === currentPeer) appendMessage(myId, data.body);
+  } else if (data.type === 'connect_ack') {
+    liveSend({type: 'directory'});
+  } else if (data.type === 'error') {
+    console.error(data.message);
+  }
+}
+
+el('composer').addEventListener('input', function () {
+  if (composeStartedAt === null) composeStartedAt = Date.now();
+});
+
+var pasteDetected = false;
+el('composer').addEventListener('paste', function () { pasteDetected = true; });
+
+el('send-btn').onclick = function () {
+  var text = el('composer').value.trim();
+  if (!text || currentPeer === null) return;
+  var composeTimeMs = composeStartedAt ? (Date.now() - composeStartedAt) : 0;
+  liveSend({
+    type: 'send',
+    peer: currentPeer,
+    body: text,
+    compose_time_ms: composeTimeMs,
+    paste_detected: pasteDetected,
+  });
+  el('composer').value = '';
+  composeStartedAt = null;
+  pasteDetected = false;
+};
+
+liveSend({type: 'directory'});
+</script>
+{% endblock %}

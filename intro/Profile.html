@@ -1,0 +1,11 @@
+{% extends 'otree/Page.html' %}
+
+{% block title %}Create your profile{% endblock %}
+
+{% block content %}
+<div>
+  <p>Other participants in this session will see your handle, avatar color, and interests -- not your real name.</p>
+  {% formfields %}
+  {% next_button %}
+</div>
+{% endblock %}

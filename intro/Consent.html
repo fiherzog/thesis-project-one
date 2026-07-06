@@ -1,0 +1,27 @@
+{% extends 'otree/Page.html' %}
+
+{% block title %}Study information & consent{% endblock %}
+
+{% block content %}
+<div>
+  <p>
+    You are being invited to take part in a study of how people form
+    connections and communicate in a small online network over two sessions,
+    about a week apart. During the live session you will exchange short
+    messages with other participants. Some participants may use, and you
+    may encounter, AI-assisted messages during the study.
+  </p>
+  <p>
+    Participation is voluntary. You may withdraw at any time without
+    penalty. Your responses will be de-identified before analysis. Session
+    recordings (message logs, survey responses) are retained only for
+    research purposes.
+  </p>
+  <p>
+    If you have questions about this study, contact the research team
+    using the information provided on the recruitment page.
+  </p>
+  {% formfield 'consented' %}
+  {% next_button %}
+</div>
+{% endblock %}
