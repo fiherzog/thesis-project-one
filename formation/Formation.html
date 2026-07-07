@@ -20,6 +20,8 @@
   #ai-draft-btn.loading { opacity: 0.6; }
   #sender-disclosure-cue { font-size: 0.8em; color: #666; margin-top: 0.2rem; }
   .msg .ai-badge { display: inline-block; font-size: 0.7em; color: #555; background: #fff3cd; border-radius: 4px; padding: 0 0.3rem; margin-left: 0.4rem; vertical-align: middle; }
+  .adopted-badge { display: inline-block; font-size: 0.7em; color: #1a5d1a; background: #d9f2d9; border-radius: 4px; padding: 0 0.3rem; margin-left: 0.3rem; vertical-align: middle; }
+  #diffusion-panel { margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px solid #ddd; font-size: 0.85em; }
 </style>
 {% endblock %}
 
@@ -45,6 +47,13 @@
     {% if assist_enabled and sender_disclosure_cue %}
     <div id="sender-disclosure-cue">Note: if you use AI-assist, your recipient will see that this message was AI-assisted.</div>
     {% endif %}
+    <div id="diffusion-panel">
+      {% if my_adopted %}
+      <span id="adopted-status">You have adopted the {{ diffusion_item }}.</span>
+      {% else %}
+      <button type="button" id="adopt-btn">Adopt the {{ diffusion_item }}</button>
+      {% endif %}
+    </div>
   </div>
 </div>
 {% endblock %}
@@ -64,6 +73,12 @@ function el(id) { return document.getElementById(id); }
 function renderDirectory(players) {
   var list = el('directory-list');
   list.innerHTML = '';
+  // Diffusion mechanic (spec Section 8): every already-adopted row we
+  // actually render on screen is a client-side-confirmed exposure -- the
+  // server already logged one when it built this directory payload, but
+  // we also report it back so re-renders of a cached payload (no fresh
+  // server round-trip) still count.
+  var seenIds = [];
   players.forEach(function (p) {
     var row = document.createElement('div');
     row.className = 'directory-row';
@@ -76,6 +91,14 @@ function renderDirectory(players) {
     btn.onclick = function () { openThread(p.id, p.handle); };
     row.appendChild(btn);
 
+    if (p.adopted) {
+      var adoptedBadge = document.createElement('span');
+      adoptedBadge.className = 'adopted-badge';
+      adoptedBadge.textContent = '\u2713';
+      row.appendChild(adoptedBadge);
+      seenIds.push(p.id);
+    }
+
     var connectBtn = document.createElement('button');
     connectBtn.type = 'button';
     connectBtn.className = 'connect-btn';
@@ -86,6 +109,7 @@ function renderDirectory(players) {
 
     list.appendChild(row);
   });
+  if (seenIds.length) liveSend({type: 'seen', seen_ids: seenIds});
 }
 
 function toggleConnect(peerId, currentlyConnected) {
@@ -104,7 +128,7 @@ function openThread(peerId, peerHandle) {
   liveSend({type: 'open_thread', peer: peerId});
 }
 
-function appendMessage(senderId, body, badgeShown) {
+function appendMessage(senderId, body, badgeShown, senderAdopted) {
   var div = document.createElement('div');
   div.className = 'msg ' + (senderId === myId ? 'mine' : 'theirs');
   var textSpan = document.createElement('span');
@@ -118,6 +142,14 @@ function appendMessage(senderId, body, badgeShown) {
     badge.textContent = 'AI-assisted';
     div.appendChild(badge);
   }
+  // Diffusion mechanic (spec Section 8): mark messages from an
+  // already-adopted peer so the adoption state is visible in-thread too.
+  if (senderAdopted) {
+    var adoptedBadge = document.createElement('span');
+    adoptedBadge.className = 'adopted-badge';
+    adoptedBadge.textContent = '\u2713';
+    div.appendChild(adoptedBadge);
+  }
   el('thread-messages').appendChild(div);
   el('thread-messages').scrollTop = el('thread-messages').scrollHeight;
 }
@@ -127,13 +159,19 @@ function liveRecv(data) {
     renderDirectory(data.players);
   } else if (data.type === 'thread_history') {
     el('thread-messages').innerHTML = '';
-    data.messages.forEach(function (m) { appendMessage(m.sender, m.body, m.ai_badge_shown); });
+    data.messages.forEach(function (m) { appendMessage(m.sender, m.body, m.ai_badge_shown, data.peer_adopted && m.sender !== myId); });
+    if (data.peer_adopted) liveSend({type: 'seen', seen_ids: [data.peer]});
   } else if (data.type === 'incoming') {
-    if (data.peer === currentPeer) appendMessage(data.peer, data.body, data.ai_badge_shown);
+    if (data.peer === currentPeer) appendMessage(data.peer, data.body, data.ai_badge_shown, data.adopted);
   } else if (data.type === 'ack') {
     if (data.peer === currentPeer) appendMessage(myId, data.body);
   } else if (data.type === 'connect_ack') {
     liveSend({type: 'directory'});
+  } else if (data.type === 'adopt_ack') {
+    if (!data.already_adopted) {
+      var panel = el('diffusion-panel');
+      if (panel) panel.innerHTML = '<span id="adopted-status">You have adopted the {{ diffusion_item }}.</span>';
+    }
   } else if (data.type === 'ai_result') {
     var btn = el('ai-draft-btn');
     if (btn) btn.classList.remove('loading');
@@ -185,6 +223,12 @@ if (el('ai-draft-btn')) {
       peer: currentPeer,
       instruction: el('composer').value.trim() || 'Draft a friendly opening message.',
     });
+  };
+}
+
+if (el('adopt-btn')) {
+  el('adopt-btn').onclick = function () {
+    liveSend({type: 'adopt'});
   };
 }
 

@@ -1,0 +1,29 @@
+{% extends 'otree/Page.html' %}
+
+{% block title %}Welcome back{% endblock %}
+
+{% block content %}
+<div>
+  {% if has_snapshot %}
+  <p>Welcome back, {{ prior_handle }}. Here's what you had going on last time:</p>
+  {% if prior_ties %}
+  <ul>
+    {% for tie in prior_ties %}
+    <li>You stayed connected with <strong>{{ tie.peer_handle }}</strong>.</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p>You didn't stay connected with anyone last time.</p>
+  {% endif %}
+  {% if prior_adopted %}
+  <p>You had adopted the {{ diffusion_item }} last time.</p>
+  {% endif %}
+  <p>Click below to continue.</p>
+  {% else %}
+  <p>Welcome. It looks like we don't have a profile on file for you from last time, so let's set one up.</p>
+  <p>Other participants in this session will see your handle, avatar color, and interests -- not your real name.</p>
+  {% formfields %}
+  {% endif %}
+  {% next_button %}
+</div>
+{% endblock %}

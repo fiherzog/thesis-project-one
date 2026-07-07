@@ -1,0 +1,36 @@
+{% extends 'otree/Page.html' %}
+
+{% block title %}A few questions{% endblock %}
+
+{% block content %}
+<div>
+  <p>PLACEHOLDER INSTRUMENT -- network closeness, Wave-2 re-measure (replace with validated scale wording; see survey2/__init__.py docstring).</p>
+  {% formfield 'closeness_1' %}
+  {% formfield 'closeness_partner' label=target_handle %}
+  <input type="hidden" name="item_latencies_json" id="id_item_latencies_json" value="{}">
+  {% next_button %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Per-item latency capture -- see survey1/NetworkCloseness.html for the pattern this mirrors.
+(function () {
+  var pageLoadedAt = Date.now();
+  var itemKeys = ['closeness_1', 'closeness_partner'];
+  var latencies = {};
+
+  itemKeys.forEach(function (key) {
+    document.querySelectorAll('input[name="' + key + '"]').forEach(function (input) {
+      input.addEventListener('change', function () {
+        if (!(key in latencies)) latencies[key] = Date.now() - pageLoadedAt;
+      });
+    });
+  });
+
+  document.querySelector('form').addEventListener('submit', function () {
+    document.getElementById('id_item_latencies_json').value = JSON.stringify(latencies);
+  });
+})();
+</script>
+{% endblock %}

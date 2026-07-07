@@ -5,3 +5,5 @@ db.sqlite3
 venv/
 *.egg-info/
 _static_root/
+_cross_wave_store.json
+_cross_wave_store.json.lock

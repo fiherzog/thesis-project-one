@@ -4,6 +4,8 @@ import time
 
 from otree.api import *
 
+import crosswave
+
 try:
     from anthropic import AsyncAnthropic
 except ImportError:  # pragma: no cover
@@ -29,8 +31,9 @@ CORE INVARIANTS (restated per phase so they don't drift):
     and Wave 2 sessions (Phase 4 adds the Wave 2 session type; no
     formation code should need to change for that).
 
-PHASE STATUS: this is the Phase 3 (disclosure) version. All four
-conditions now exist.
+PHASE STATUS: this is the Phase 4 (diffusion + Wave 2) version. All four
+conditions exist, both waves run through this same app, and the
+diffusion mechanic is wired in.
   - Messaging + persistent threads: done (Phase 1).
   - Explicit tie tracking (connect / connect_remove): done (Phase 1).
     Behavioral ties (>=3 messages each way) are NOT computed live -- per
@@ -44,9 +47,15 @@ conditions now exist.
     docstring) since the exact condition numbering wasn't restated in
     every phase of the spec; adjust ASSIST_ENABLED_CONDITIONS if the
     study's actual condition numbering differs.
-  - Disclosure badge (ai_badge_shown, recipient-visible cue): done this
-    phase -- see PHASE 3 NOTES below.
-  - Diffusion mechanic (Exposure/Adoption): Phase 4.
+  - Disclosure badge (ai_badge_shown, recipient-visible cue): done Phase
+    3 -- see PHASE 3 NOTES below.
+  - Diffusion mechanic (Exposure/Adoption, seeding, adopt surface): done
+    this phase -- see PHASE 4 NOTES below.
+  - Wave 2 (Rooms, cross-wave store, recontact app): done this phase --
+    this app itself needed NO changes for Wave 2 beyond what Phase 1
+    already built (it was wave-agnostic from the start, per the
+    CORE INVARIANTS above); the new work lives in the `crosswave` module
+    and the new `recontact`/`survey2`/`debrief` apps.
 
 PHASE 2 NOTES (AI-assist):
   - `run_ai_draft` proxies the Anthropic API server-side only -- the API
@@ -96,6 +105,46 @@ PHASE 3 NOTES (disclosure badge, spec Section 7):
     deliberately minimal per the spec's "keep the difference minimal"
     instruction, since the cue itself is not supposed to be a second,
     uncontrolled manipulation.
+
+PHASE 4 NOTES (diffusion mechanic, spec Section 8):
+  - Seeding: at `diffusion_seed_time_s` into the session, `diffusion_seeds`
+    players (chosen deterministically by lowest id_in_group, simplest
+    reproducible rule) are marked adopted. There's no background task
+    runner in this build, so -- per the spec's own suggestion -- seeding
+    is triggered by a timestamp check that runs on every live_method call
+    and fires (once) on whichever call happens to land after the seed
+    time. The session "start" reference and a one-shot "already seeded"
+    flag both live in `session.vars` (in-memory, session-scoped, and
+    exactly the kind of shared-across-players state `session.vars` is
+    for -- unlike `participant.vars`, which is per-participant only).
+  - Exposure counting: an Exposure row is the record of ego having been
+    shown an already-adopted alter. Logged from two places, per spec:
+    server-side, automatically, whenever an adopted alter is pushed into
+    ego's `directory` listing or an `incoming` message payload; and
+    client-side, via an explicit `seen` event the client can send for
+    anything else it rendered (e.g. scrolling a thread history that
+    contains an adopted alter). Both paths call the same
+    `log_exposure_if_new`, which de-duplicates by (ego, alter) so
+    `Adoption.exposure_count_at_adoption` counts *distinct* adopted
+    neighbors, not raw impressions -- that de-duplication is what makes
+    the exposure-threshold distribution meaningful (spec: "the
+    simple-vs-complex signal").
+  - Adoption: the `adopt` live_method branch (`handle_adoption`) snapshots
+    every alter ego has been exposed to at the moment of adoption into
+    `Adoption.adopted_neighbor_ids` (JSON list) and its count into
+    `exposure_count_at_adoption`. This build implements the generic
+    "badge" diffusion item (spec: "build the generic badge path first");
+    the linguistic-marker variant is an explicitly-flagged add-on, not
+    built here.
+  - This build does NOT re-seed or otherwise touch diffusion state in
+    Wave 2 -- seeding is a Wave-1-only concept per the spec's framing of
+    diffusion as something that plays out *during* a session; Wave 2's
+    `formation` page will simply carry over whatever Adoption rows a
+    returning participant already has (Adoption is keyed by the *player*
+    row for a given round, so a Wave-2 session's fresh Player rows start
+    with no Adoption row of their own -- diffusion in Wave 2, if wanted,
+    would need its own seed/adopt cycle, which is out of scope here
+    unless the study design calls for it).
 """
 
 
@@ -211,6 +260,25 @@ class AIEvent(ExtraModel):
     ts = models.FloatField()
 
 
+class Exposure(ExtraModel):
+    """Diffusion mechanic (spec Section 8): one row per (ego, alter) the
+    first time ego is shown alter in an already-adopted state. De-duplicated
+    at write time (see log_exposure_if_new) so COUNT(*) per player already
+    equals "distinct adopted neighbors ego has been exposed to"."""
+
+    player = models.Link(Player)  # ego (the one exposed)
+    alter_id = models.StringField()  # an already-adopted contact seen
+    ts = models.FloatField()
+
+
+class Adoption(ExtraModel):
+    player = models.Link(Player)
+    item = models.StringField()
+    exposure_count_at_adoption = models.IntegerField()
+    adopted_neighbor_ids = models.LongStringField()  # JSON list
+    ts = models.FloatField()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -245,6 +313,71 @@ def log_event(player: Player, type_: str, target_id='', payload=None):
     )
 
 
+def is_adopted(player: Player) -> bool:
+    return len(Adoption.filter(player=player)) > 0
+
+
+def log_exposure_if_new(ego: Player, alter_id) -> None:
+    """Spec Section 8: an Exposure row means ego has now been shown this
+    (already-adopted) alter at least once. De-duplicated here by (ego,
+    alter) so downstream COUNT(*) is "distinct adopted neighbors", not raw
+    impressions."""
+    alter_id = str(alter_id)
+    already = {e.alter_id for e in Exposure.filter(player=ego)}
+    if alter_id not in already:
+        Exposure.create(player=ego, alter_id=alter_id, ts=now_ms())
+
+
+def maybe_seed_diffusion(player: Player):
+    """Spec Section 8 seeding, triggered by a timestamp check on every
+    live_method call (no background task runner in this build -- the spec
+    explicitly allows this: "fires on the next event after the seed
+    time"). Session-wide start reference and one-shot flag live in
+    `session.vars`, which (unlike `participant.vars`) is shared across all
+    players in the session -- exactly the scope this needs."""
+    session = player.session
+    started_at = session.vars.setdefault('diffusion_started_at', now_ms())
+    if session.vars.get('diffusion_seeded'):
+        return
+    elapsed_s = (now_ms() - started_at) / 1000
+    if elapsed_s < session.config['diffusion_seed_time_s']:
+        return
+    session.vars['diffusion_seeded'] = True
+    k = session.config['diffusion_seeds']
+    item = session.config['diffusion_item']
+    candidates = sorted(player.group.get_players(), key=lambda p: p.id_in_group)[:k]
+    seeded_ids = []
+    for p in candidates:
+        if not is_adopted(p):
+            Adoption.create(
+                player=p, item=item, exposure_count_at_adoption=0,
+                adopted_neighbor_ids='[]', ts=now_ms(),
+            )
+        seeded_ids.append(p.id_in_group)
+    log_event(player, 'diffusion_seeded', payload={'seeded_ids': seeded_ids, 'item': item})
+
+
+def handle_adoption(player: Player, data: dict):
+    if is_adopted(player):
+        return {'type': 'adopt_ack', 'already_adopted': True}
+    item = player.session.config['diffusion_item']
+    adopted_neighbor_ids = sorted(
+        {e.alter_id for e in Exposure.filter(player=player)}, key=int
+    )
+    Adoption.create(
+        player=player, item=item,
+        exposure_count_at_adoption=len(adopted_neighbor_ids),
+        adopted_neighbor_ids=json.dumps(adopted_neighbor_ids),
+        ts=now_ms(),
+    )
+    log_event(player, 'adopted', payload={'exposure_count_at_adoption': len(adopted_neighbor_ids)})
+    return {
+        'type': 'adopt_ack',
+        'already_adopted': False,
+        'exposure_count_at_adoption': len(adopted_neighbor_ids),
+    }
+
+
 def build_directory(player: Player):
     others = player.get_others_in_group()
     connected_dst_ids = {
@@ -252,17 +385,20 @@ def build_directory(player: Player):
         for t in Tie.filter(player=player)
         if t.kind == 'explicit' and t.removed_at == 0
     }
-    return {
-        'type': 'directory',
-        'players': [
-            {
-                'id': p.id_in_group,
-                'handle': player_handle(p),
-                'connected': str(p.id_in_group) in connected_dst_ids,
-            }
-            for p in others
-        ],
-    }
+    rows = []
+    for p in others:
+        adopted = is_adopted(p)
+        if adopted:
+            # Server-side exposure logging (spec Section 8): pushing an
+            # adopted alter into ego's directory counts as an exposure.
+            log_exposure_if_new(player, p.id_in_group)
+        rows.append({
+            'id': p.id_in_group,
+            'handle': player_handle(p),
+            'connected': str(p.id_in_group) in connected_dst_ids,
+            'adopted': adopted,
+        })
+    return {'type': 'directory', 'players': rows}
 
 
 def load_thread(player: Player, peer_id: int):
@@ -277,9 +413,15 @@ def load_thread(player: Player, peer_id: int):
         [m for m in rows if m.thread_id == tid], key=lambda m: m.ts
     )
     my_id_str = str(player.id_in_group)
+    # Reloading a thread that contains a message from an already-adopted
+    # peer counts as an exposure too (spec Section 8: "in a thread").
+    if is_adopted(peer):
+        log_exposure_if_new(player, peer.id_in_group)
+    peer_adopted = is_adopted(peer)
     return {
         'type': 'thread_history',
         'peer': peer_id,
+        'peer_adopted': peer_adopted,
         'messages': [
             {
                 'sender': m.player.id_in_group,
@@ -534,6 +676,61 @@ class Formation(Page):
         return player.session.config['session_seconds']
 
     @staticmethod
+    def before_next_page(player: Player, timeout_happened):
+        # Cross-wave snapshot (spec Section 10, Phase 4b): only Wave-1
+        # needs to snapshot anything -- Wave-2's formation page is the end
+        # of the line for this study, there's no Wave-3 to hand off to.
+        if get_wave(player) != 1:
+            return
+        room_name = player.session.config.get('room_name')
+        label = player.participant.label
+        # No Room configured (e.g. ad-hoc/demo sessions not run through a
+        # Room) means there's no stable cross-wave identity to key on --
+        # nothing to snapshot, and recontact will fall back to its own
+        # no-prior-snapshot path.
+        if not room_name or not label:
+            return
+        # Tie rows are directed edges (Tie.player is whoever clicked
+        # Connect -- see handle_connect / survey1's
+        # first_connected_partner_handle for the same issue there): a
+        # participant who only *received* a connect request has no
+        # outgoing Tie of their own. Check both directions so the
+        # snapshot doesn't silently drop the recipient's half of a tie.
+        peer_ids = set()
+        for t in Tie.filter(player=player):
+            if t.kind == 'explicit' and t.active_wave1:
+                peer_ids.add(int(t.dst_id))
+        my_id_str = str(player.id_in_group)
+        for other in player.get_others_in_group():
+            for t in Tie.filter(player=other):
+                if t.kind == 'explicit' and t.active_wave1 and t.dst_id == my_id_str:
+                    peer_ids.add(other.id_in_group)
+        ties = []
+        for peer_id in peer_ids:
+            peer = player.group.get_player_by_id(peer_id)
+            # Keyed by the peer's participant.label, not id_in_group --
+            # id_in_group is only stable within a single session's Group
+            # and means nothing once Wave-2 forms new Groups.
+            ties.append({
+                'peer_label': peer.participant.label,
+                'peer_handle': player_handle(peer),
+            })
+        crosswave.snapshot_wave1(room_name, label, {
+            'handle': player_handle(player),
+            # Carried over so Wave 2's recontact app can skip re-asking for
+            # a profile entirely when a snapshot exists -- these live in
+            # participant.vars (set by intro/Tutorial), not on this app's
+            # own Player model, and participant.vars does not itself cross
+            # sessions (that's the whole reason this store exists).
+            'avatar_preset': player.participant.vars.get('avatar_preset'),
+            'interest_tags': player.participant.vars.get('interest_tags'),
+            'ties': ties,
+            'adopted': is_adopted(player),
+            'diffusion_item': player.session.config['diffusion_item'],
+            'ts': now_ms(),
+        })
+
+    @staticmethod
     def vars_for_template(player: Player):
         return {
             'my_handle': player_handle(player),
@@ -542,11 +739,24 @@ class Formation(Page):
             # Section 7 / Decision G): whether the sender is told their
             # AI-assisted messages will be labeled to the recipient.
             'sender_disclosure_cue': player.session.config['sender_disclosure_cue'],
+            # Diffusion mechanic (spec Section 8): the client only needs to
+            # know the item's display name and whether *this* player has
+            # already adopted it (to decide whether to show an Adopt
+            # button at all).
+            'diffusion_item': player.session.config['diffusion_item'],
+            'my_adopted': is_adopted(player),
         }
 
     @staticmethod
     async def live_method(player: Player, data: dict):
         t = data.get('type')
+
+        # Diffusion seeding (spec Section 8): no background task runner in
+        # this build, so seeding is triggered by a timestamp check on every
+        # live_method call -- see maybe_seed_diffusion() for why this is
+        # safe (session.vars-gated, one-shot, and the spec explicitly
+        # allows firing "on the next event after the seed time").
+        maybe_seed_diffusion(player)
 
         if t == 'directory':
             log_event(player, 'directory_viewed')
@@ -570,12 +780,20 @@ class Formation(Page):
             # the *viewer* happens to be in at reload time.
             badge = ai_badge_for(recipient, msg)
             msg.ai_badge_shown = badge
+            # Diffusion mechanic (spec Section 8): if the sender has
+            # already adopted the item, receiving a message from them is
+            # itself an exposure for the recipient -- log it and tell the
+            # recipient's client so it can render the sender as adopted.
+            sender_adopted = is_adopted(player)
+            if sender_adopted:
+                log_exposure_if_new(recipient, player.id_in_group)
             payload = {
                 'type': 'incoming',
                 'peer': player.id_in_group,
                 'body': msg.sent_text,
                 'ts': msg.ts,
                 'ai_badge_shown': badge,
+                'adopted': sender_adopted,
             }
             ack = {
                 'type': 'ack',
@@ -602,6 +820,31 @@ class Formation(Page):
         if t == 'ai_draft':
             log_event(player, 'ai_draft_requested', target_id=data.get('peer', ''), payload={'instruction': data.get('instruction', '')})
             result = await run_ai_draft(player, data)
+            yield {player.id_in_group: result}
+            return
+
+        if t == 'seen':
+            # Client-side exposure capture (spec Section 8): the client
+            # reports which already-adopted directory/thread rows it just
+            # rendered on screen. This complements the server-side
+            # exposure logging already done in build_directory() /
+            # load_thread() / the 'send' branch above, catching cases
+            # where an adopted peer's row was already cached client-side
+            # and re-rendered without a fresh server round-trip.
+            for raw_id in data.get('seen_ids', []):
+                try:
+                    seen_id = int(raw_id)
+                except (TypeError, ValueError):
+                    continue
+                peer = player.group.get_player_by_id(seen_id)
+                if is_adopted(peer):
+                    log_exposure_if_new(player, seen_id)
+            log_event(player, 'seen_reported', payload={'seen_ids': data.get('seen_ids', [])})
+            yield {player.id_in_group: {'type': 'seen_ack'}}
+            return
+
+        if t == 'adopt':
+            result = handle_adoption(player, data)
             yield {player.id_in_group: result}
             return
 

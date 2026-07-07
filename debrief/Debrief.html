@@ -1,0 +1,19 @@
+{% extends 'otree/Page.html' %}
+
+{% block title %}Debrief{% endblock %}
+
+{% block content %}
+<div>
+  <p>PLACEHOLDER DEBRIEF TEXT -- not IRB-approved wording, see debrief/__init__.py docstring.</p>
+  <p>Thank you for participating in both sessions of this study. This research looked at how people form connections and share information in online groups, and how AI writing assistance affects that process.</p>
+  {% if had_ai_assist %}
+  <p>In this study, some participants had access to an AI-assist tool that could help draft messages.</p>
+  {% if was_undisclosed_ai %}
+  <p>In your session, when a message was AI-assisted, this was <strong>not</strong> shown to the recipient. We did not tell you this in advance because it was part of what we were studying: whether undisclosed AI assistance changes how people build trust and connection. We're telling you now, at the end of the study.</p>
+  {% endif %}
+  {% endif %}
+  <p>If, now that you know this, you would prefer that your data not be used in this research, you can withdraw below. Withdrawing will not affect your compensation.</p>
+  {% formfields %}
+  {% next_button %}
+</div>
+{% endblock %}
