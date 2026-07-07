@@ -126,3 +126,83 @@ def custom_export(players):
             condition == 4,
             condition in (2, 3, 4),
         ]
+
+
+# ---------------------------------------------------------------------------
+# Out-of-band debrief delivery (build spec Section 11/15, Phase 6c):
+# participants who withdraw or otherwise never reach this last page in the
+# Wave-2 app_sequence still need the debrief content delivered somehow (e.g.
+# by email) -- this study never collects an email address itself, so this
+# tooling only generates the text content and lists who needs it; actually
+# sending it is a manual/out-of-band step outside this codebase.
+# ---------------------------------------------------------------------------
+
+
+def debrief_text(had_ai_assist: bool, was_undisclosed_ai: bool) -> str:
+    """Plain-text mirror of Debrief.html's conditional copy, for manual/
+    out-of-band delivery to participants who never reached this page."""
+    lines = [
+        "PLACEHOLDER DEBRIEF TEXT -- not IRB-approved wording, see debrief/__init__.py docstring.",
+        "",
+        "Thank you for participating in both sessions of this study. This research "
+        "looked at how people form connections and share information in online "
+        "groups, and how AI writing assistance affects that process.",
+    ]
+    if had_ai_assist:
+        lines.append("")
+        lines.append(
+            "In this study, some participants had access to an AI-assist tool that "
+            "could help draft messages."
+        )
+        if was_undisclosed_ai:
+            lines.append("")
+            lines.append(
+                "In your session, when a message was AI-assisted, this was not shown "
+                "to the recipient. We did not tell you this in advance because it was "
+                "part of what we were studying: whether undisclosed AI assistance "
+                "changes how people build trust and connection. We're telling you now, "
+                "at the end of the study."
+            )
+    lines.append("")
+    lines.append(
+        "If, now that you know this, you would prefer that your data not be used in "
+        "this research, please contact the research team. Withdrawing will not "
+        "affect your compensation."
+    )
+    return "\n".join(lines)
+
+
+def custom_export_noncompleters(players):
+    """One row per Wave-2 participant who actually started the Wave-2
+    app_sequence but never finished it (so never saw this page's
+    disclosure/withdrawal offer), with the debrief text they still need
+    delivered out-of-band. Participant slots nobody ever showed up for
+    (`_index_in_pages == 0`) are skipped -- they were never real study
+    participants, so there's nothing to debrief them about."""
+    yield [
+        'session_code', 'room_name', 'condition', 'wave',
+        'participant_label', 'opaque_id', 'debrief_text',
+    ]
+
+    for p in players:
+        participant = p.participant
+        if participant._index_in_pages == 0:
+            continue  # never started; not an actual participant
+        if participant._index_in_pages > participant._max_page_index:
+            continue  # finished the app_sequence; reached this page normally
+
+        session = p.session
+        cfg = session.config
+        label = participant.label or ''
+        condition = cfg.get('condition')
+        had_ai_assist = condition in (2, 3, 4)
+        was_undisclosed_ai = condition == 4
+        yield [
+            session.code,
+            cfg.get('room_name', ''),
+            condition,
+            cfg.get('wave'),
+            label,
+            opaque_id(session.code, label or participant.code),
+            debrief_text(had_ai_assist, was_undisclosed_ai),
+        ]

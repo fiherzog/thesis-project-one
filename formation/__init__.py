@@ -6,6 +6,7 @@ import time
 from otree.api import *
 
 import crosswave
+import tombstone
 from deidentify import opaque_id
 
 try:
@@ -937,7 +938,8 @@ def custom_export_nodes(players):
         'n_exposures_total', 'ai_calls_used', 'ai_cost_spent',
     ]
 
-    player_ids = {p.id for p in players}
+    excluded_ids, excluded_idg = tombstone.excluded_keys(players)
+    player_ids = {p.id for p in players if p.id not in excluded_ids}
     messages = [m for m in Message.filter() if m.player_id in player_ids]
     ties = [t for t in Tie.filter() if t.player_id in player_ids]
     exposures = [e for e in Exposure.filter() if e.player_id in player_ids]
@@ -966,6 +968,8 @@ def custom_export_nodes(players):
         ai_cost_by_pid[e.player_id] = ai_cost_by_pid.get(e.player_id, 0.0) + e.cost_usd
 
     for p in players:
+        if p.id in excluded_ids:
+            continue
         session = p.session
         participant = p.participant
         label = participant.label or ''
@@ -1004,7 +1008,8 @@ def custom_export_edges(players):
         'active_wave1', 'active_wave2', 'removed_at',
     ]
 
-    player_ids = {p.id for p in players}
+    excluded_ids, excluded_idg = tombstone.excluded_keys(players)
+    player_ids = {p.id for p in players if p.id not in excluded_ids}
     by_session_and_idg = {(p.session_id, p.id_in_group): p for p in players}
     ties = [t for t in Tie.filter() if t.player_id in player_ids]
     messages = [m for m in Message.filter() if m.player_id in player_ids]
@@ -1013,6 +1018,8 @@ def custom_export_edges(players):
         if t.kind != 'explicit':
             continue
         src = t.player
+        if (src.session_id, int(t.dst_id)) in excluded_idg:
+            continue
         dst = by_session_and_idg.get((src.session_id, int(t.dst_id)))
         if dst is None:
             continue
@@ -1045,6 +1052,8 @@ def custom_export_edges(players):
             if pair in seen_pairs:
                 continue
             seen_pairs.add(pair)
+            if (session_id, pair[0]) in excluded_idg or (session_id, pair[1]) in excluded_idg:
+                continue
             a_to_b = counts.get((pair[0], pair[1]), 0)
             b_to_a = counts.get((pair[1], pair[0]), 0)
             if a_to_b >= 3 and b_to_a >= 3:
@@ -1074,12 +1083,15 @@ def custom_export_messages(players):
         'paste_detected', 'ai_badge_shown', 'ts',
     ]
 
-    player_ids = {p.id for p in players}
+    excluded_ids, excluded_idg = tombstone.excluded_keys(players)
+    player_ids = {p.id for p in players if p.id not in excluded_ids}
     by_session_and_idg = {(p.session_id, p.id_in_group): p for p in players}
     messages = [m for m in Message.filter() if m.player_id in player_ids]
 
     for m in messages:
         sender = m.player
+        if (sender.session_id, int(m.recipient_id)) in excluded_idg:
+            continue
         session = sender.session
         recipient = by_session_and_idg.get((sender.session_id, int(m.recipient_id)))
         recipient_label = recipient.participant.label or '' if recipient else ''
@@ -1114,12 +1126,15 @@ def custom_export_corpus(players):
     themselves identify anyone."""
     yield _CONFIG_STAMP_HEADER + ['message_id', 'dyad', 'opaque_author', 'ordinal', 'sent_text']
 
-    player_ids = {p.id for p in players}
+    excluded_ids, excluded_idg = tombstone.excluded_keys(players)
+    player_ids = {p.id for p in players if p.id not in excluded_ids}
     by_session_and_idg = {(p.session_id, p.id_in_group): p for p in players}
     messages = [m for m in Message.filter() if m.player_id in player_ids]
 
     for m in messages:
         sender = m.player
+        if (sender.session_id, int(m.recipient_id)) in excluded_idg:
+            continue
         session = sender.session
         recipient = by_session_and_idg.get((sender.session_id, int(m.recipient_id)))
         sender_oid = opaque_id(session.code, sender.participant.label or sender.participant.code)
@@ -1148,7 +1163,8 @@ def custom_export_diffusion(players):
         'first_exposure_ts', 'seeded',
     ]
 
-    player_ids = {p.id for p in players}
+    excluded_ids, excluded_idg = tombstone.excluded_keys(players)
+    player_ids = {p.id for p in players if p.id not in excluded_ids}
     adoptions = {a.player_id: a for a in Adoption.filter() if a.player_id in player_ids}
     exposures_by_pid = {}
     for e in Exposure.filter():
@@ -1166,6 +1182,8 @@ def custom_export_diffusion(players):
                 seeded_keys.add((session_id, idg))
 
     for p in players:
+        if p.id in excluded_ids:
+            continue
         session = p.session
         participant = p.participant
         label = participant.label or ''

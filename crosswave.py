@@ -97,3 +97,46 @@ def load_wave1(room_name: str, participant_label: str):
         return None
     store = _load_all()
     return store.get(_key(room_name, participant_label))
+
+
+def attrition_report(room_name: str) -> dict:
+    """Cross-wave attrition summary for `room_name` (build spec Section 15,
+    Phase 6d: "attrition over-recruit tooling"): which Wave-1 completers
+    (participants who finished `formation` and got a snapshot -- see
+    `snapshot_wave1`) have shown up for Wave 2 so far, and which haven't
+    yet -- so the researcher running Wave 2 can see how many no-shows there
+    are and decide how many replacements to over-recruit. Returns raw
+    label lists/counts only; this module doesn't invent an over-recruit
+    formula.
+
+    "Started Wave 2" means a Participant in a session whose config has
+    `room_name == room_name` and `wave == 2`, whose `participant.label`
+    matches a Wave-1 completer, and who has progressed past the very first
+    page (`_index_in_pages > 0`) -- i.e. actually opened their Room link,
+    not just an unused session slot oTree pre-allocated.
+    """
+    if not room_name:
+        return {'wave1_completers': [], 'wave2_started': [], 'not_yet_returned': []}
+
+    store = _load_all()
+    prefix = f'{room_name}::'
+    wave1_completers = sorted(
+        key[len(prefix):] for key in store if key.startswith(prefix)
+    )
+
+    import otree.models  # local import: avoids import-order coupling at plain-module import time
+
+    wave2_started = set()
+    for participant in otree.models.Participant.objects_filter():
+        cfg = participant.session.config
+        if cfg.get('room_name') != room_name or cfg.get('wave') != 2:
+            continue
+        if participant.label and participant._index_in_pages > 0:
+            wave2_started.add(participant.label)
+
+    not_yet_returned = sorted(set(wave1_completers) - wave2_started)
+    return {
+        'wave1_completers': wave1_completers,
+        'wave2_started': sorted(wave2_started),
+        'not_yet_returned': not_yet_returned,
+    }

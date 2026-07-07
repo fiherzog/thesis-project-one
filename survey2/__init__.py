@@ -5,6 +5,7 @@ import time
 from otree.api import *
 
 import formation as formation_app
+import tombstone
 from deidentify import opaque_id
 
 doc = """
@@ -202,7 +203,8 @@ def custom_export(players):
         'item_latency_ms', 'ts',
     ]
 
-    player_ids = {p.id for p in players}
+    excluded_ids, _ = tombstone.excluded_keys(players)
+    player_ids = {p.id for p in players if p.id not in excluded_ids}
     responses = [r for r in SurveyResponse.filter() if r.player_id in player_ids]
 
     for r in responses:

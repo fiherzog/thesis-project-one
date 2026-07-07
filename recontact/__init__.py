@@ -149,3 +149,31 @@ class Recontact(Page):
 
 
 page_sequence = [Recontact]
+
+
+# ---------------------------------------------------------------------------
+# Custom export (spec Section 15, Phase 6d): attrition/over-recruit report.
+# One row per distinct room_name seen among the `players` passed in (usually
+# just one, since this is normally downloaded for a single Wave-2 session's
+# admin Data page) -- see crosswave.attrition_report for the actual query.
+# ---------------------------------------------------------------------------
+
+
+def custom_export_attrition(players):
+    yield [
+        'room_name', 'wave1_completers_n', 'wave2_started_n', 'not_yet_returned_n',
+        'not_yet_returned_labels',
+    ]
+
+    room_names = sorted({p.session.config.get('room_name', '') for p in players})
+    for room_name in room_names:
+        if not room_name:
+            continue
+        report = crosswave.attrition_report(room_name)
+        yield [
+            room_name,
+            len(report['wave1_completers']),
+            len(report['wave2_started']),
+            len(report['not_yet_returned']),
+            ', '.join(report['not_yet_returned']),
+        ]
