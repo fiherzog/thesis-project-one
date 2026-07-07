@@ -1,6 +1,10 @@
+import hashlib
 import time
 
 from otree.api import *
+
+import formation as formation_app
+from deidentify import opaque_id
 
 doc = """
 Wave 2 debrief (build spec Section 11, Phase 4d placeholder).
@@ -84,3 +88,41 @@ class Debrief(Page):
 
 
 page_sequence = [Debrief]
+
+
+# ---------------------------------------------------------------------------
+# Custom export (spec Section 13, Phase 5): withdrawal/integrity table --
+# one row per Wave-2 participant who reached debrief. See formation's
+# PHASE 5 NOTES for the shared design decisions (config stamp, etc).
+# ---------------------------------------------------------------------------
+
+def _frozen_prompt_hash() -> str:
+    return hashlib.sha256(formation_app.C.FROZEN_SYSTEM_PROMPT.encode('utf-8')).hexdigest()[:12]
+
+
+def custom_export(players):
+    yield [
+        'session_code', 'room_name', 'condition', 'wave', 'assist_model', 'frozen_prompt_hash',
+        'participant_label', 'opaque_id', 'withdrawn', 'withdrawn_at',
+        'was_undisclosed_ai', 'had_ai_assist',
+    ]
+
+    for p in players:
+        session = p.session
+        cfg = session.config
+        label = p.participant.label or ''
+        condition = cfg.get('condition')
+        yield [
+            session.code,
+            cfg.get('room_name', ''),
+            condition,
+            cfg.get('wave'),
+            cfg.get('assist_model', ''),
+            _frozen_prompt_hash(),
+            label,
+            opaque_id(session.code, label or p.participant.code),
+            p.withdrawn,
+            p.withdrawn_at,
+            condition == 4,
+            condition in (2, 3, 4),
+        ]

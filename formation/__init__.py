@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import time
@@ -5,6 +6,7 @@ import time
 from otree.api import *
 
 import crosswave
+from deidentify import opaque_id
 
 try:
     from anthropic import AsyncAnthropic
@@ -56,6 +58,48 @@ diffusion mechanic is wired in.
     already built (it was wave-agnostic from the start, per the
     CORE INVARIANTS above); the new work lives in the `crosswave` module
     and the new `recontact`/`survey2`/`debrief` apps.
+  - Export suite (custom_export_*, spec Section 13): done Phase 5 -- see
+    PHASE 5 NOTES below.
+
+PHASE 5 NOTES (export suite, spec Section 13):
+  - Every function below named `custom_export_*` is picked up automatically
+    by oTree's admin "Data" page (any callable starting with
+    `custom_export` in an app's models module is listed as a separate
+    downloadable CSV -- see `otree.export.get_custom_export_functions`).
+    Since this app owns every diffusion/messaging/tie ExtraModel, most of
+    the spec's six export tables live here rather than being split across
+    apps.
+  - `.filter()` with *no* kwargs at all is a special case oTree allows only
+    for custom_export (`ExtraModel.filter`'s own comment: "this allows
+    querying .filter() without any args for custom_export") -- it returns
+    every row of that model ever created, across all sessions. Every
+    function below uses that, then narrows to the current export's scope
+    by intersecting on `players` (which oTree already scopes to one
+    session when the admin exports a single session, or to everything
+    when exporting globally) rather than re-deriving that filtering logic
+    itself.
+  - Every row is stamped with `assist_model` + `frozen_prompt_hash` (spec:
+    "Stamp every export with the session config snapshot ... for
+    reproducibility") so a single downloaded CSV is self-describing even
+    in isolation, not just when the whole suite is exported together.
+  - `custom_export_corpus` is the one de-identified table (spec: "handles
+    -> opaque ids") -- it's the only export that carries `sent_text`, and
+    it deliberately omits `participant_label`/`handle` in favor of
+    `deidentify.opaque_id`. The other tables keep plain labels/handles
+    (this is server-side research data, not a public release) but also
+    include `opaque_id` alongside them so analysts can join a de-identified
+    working copy against the corpus without re-deriving the hash.
+  - `custom_export_edges` emits both tie definitions per spec Section 9
+    ("build both definitions"): `kind='explicit'` rows come straight from
+    the `Tie` table; `kind='behavioral'` rows are derived here, at export
+    time, from `Message` counts (>=3 each way, per the spec's own example
+    threshold) -- behavioral ties are intentionally never stored live.
+  - No "authenticity_score" column (loosely gestured at as an example in
+    spec Section 13's node-table bullet) is fabricated here -- its inputs
+    (paste_detected, edit_distance, pct_retained, compose_time_ms) are all
+    in `custom_export_messages`, and Section 6 is explicit that any
+    composite dose/authenticity score is an analysis-layer computation,
+    not something oTree itself should produce.
 
 PHASE 2 NOTES (AI-assist):
   - `run_ai_draft` proxies the Anthropic API server-side only -- the API
@@ -853,3 +897,289 @@ class Formation(Page):
 
 
 page_sequence = [Formation]
+
+
+# ---------------------------------------------------------------------------
+# Custom export suite (spec Section 13, Phase 5). See PHASE 5 NOTES in the
+# module docstring above for the shared design decisions.
+# ---------------------------------------------------------------------------
+
+
+def _frozen_prompt_hash() -> str:
+    return hashlib.sha256(C.FROZEN_SYSTEM_PROMPT.encode('utf-8')).hexdigest()[:12]
+
+
+def _config_stamp(session):
+    cfg = session.config
+    return [
+        session.code,
+        cfg.get('room_name', ''),
+        cfg.get('condition'),
+        cfg.get('wave'),
+        cfg.get('assist_model', ''),
+        _frozen_prompt_hash(),
+    ]
+
+
+_CONFIG_STAMP_HEADER = [
+    'session_code', 'room_name', 'condition', 'wave', 'assist_model', 'frozen_prompt_hash',
+]
+
+
+def custom_export_nodes(players):
+    """Node attribute table (spec Section 13): one row per participant per
+    session. Adoption/exposure/messaging/tie counts are all derived here
+    from the other ExtraModels rather than stored redundantly anywhere."""
+    yield _CONFIG_STAMP_HEADER + [
+        'participant_label', 'opaque_id', 'handle', 'avatar_preset', 'interest_tags',
+        'consented', 'consented_at', 'n_messages_sent', 'n_messages_received',
+        'n_explicit_ties', 'adopted', 'adoption_ts', 'exposure_count_at_adoption',
+        'n_exposures_total', 'ai_calls_used', 'ai_cost_spent',
+    ]
+
+    player_ids = {p.id for p in players}
+    messages = [m for m in Message.filter() if m.player_id in player_ids]
+    ties = [t for t in Tie.filter() if t.player_id in player_ids]
+    exposures = [e for e in Exposure.filter() if e.player_id in player_ids]
+    adoptions = {a.player_id: a for a in Adoption.filter() if a.player_id in player_ids}
+    ai_events = [e for e in AIEvent.filter() if e.player_id in player_ids]
+
+    sent_by_pid = {}
+    for m in messages:
+        sent_by_pid.setdefault(m.player_id, []).append(m)
+    # "received" is keyed by (session_id, id_in_group) since recipient_id is
+    # only an id_in_group string, not a player.id.
+    received_count = {}
+    for m in messages:
+        key = (m.player.session_id, m.recipient_id)
+        received_count[key] = received_count.get(key, 0) + 1
+    ties_by_pid = {}
+    for t in ties:
+        ties_by_pid.setdefault(t.player_id, []).append(t)
+    exposures_by_pid = {}
+    for e in exposures:
+        exposures_by_pid.setdefault(e.player_id, []).append(e)
+    ai_cost_by_pid = {}
+    ai_calls_by_pid = {}
+    for e in ai_events:
+        ai_calls_by_pid[e.player_id] = ai_calls_by_pid.get(e.player_id, 0) + 1
+        ai_cost_by_pid[e.player_id] = ai_cost_by_pid.get(e.player_id, 0.0) + e.cost_usd
+
+    for p in players:
+        session = p.session
+        participant = p.participant
+        label = participant.label or ''
+        n_explicit_ties = len({
+            t.dst_id for t in ties_by_pid.get(p.id, [])
+            if t.kind == 'explicit' and t.removed_at == 0
+        })
+        adoption = adoptions.get(p.id)
+        yield _config_stamp(session) + [
+            label,
+            opaque_id(session.code, label or participant.code),
+            player_handle(p),
+            participant.vars.get('avatar_preset'),
+            participant.vars.get('interest_tags'),
+            participant.vars.get('consented'),
+            participant.vars.get('consented_at'),
+            len(sent_by_pid.get(p.id, [])),
+            received_count.get((p.session_id, str(p.id_in_group)), 0),
+            n_explicit_ties,
+            adoption is not None,
+            adoption.ts if adoption else '',
+            adoption.exposure_count_at_adoption if adoption else '',
+            len(exposures_by_pid.get(p.id, [])),
+            ai_calls_by_pid.get(p.id, 0),
+            round(ai_cost_by_pid.get(p.id, 0.0), 4),
+        ]
+
+
+def custom_export_edges(players):
+    """Edge list (spec Section 13 + Section 9 'build both definitions'):
+    explicit ties come straight from the Tie table; behavioral ties (>=3
+    messages each way) are derived here at export time from Message counts
+    and never stored live."""
+    yield _CONFIG_STAMP_HEADER + [
+        'kind', 'src_label', 'dst_label', 'weight', 'formed_wave',
+        'active_wave1', 'active_wave2', 'removed_at',
+    ]
+
+    player_ids = {p.id for p in players}
+    by_session_and_idg = {(p.session_id, p.id_in_group): p for p in players}
+    ties = [t for t in Tie.filter() if t.player_id in player_ids]
+    messages = [m for m in Message.filter() if m.player_id in player_ids]
+
+    for t in ties:
+        if t.kind != 'explicit':
+            continue
+        src = t.player
+        dst = by_session_and_idg.get((src.session_id, int(t.dst_id)))
+        if dst is None:
+            continue
+        session = src.session
+        yield _config_stamp(session) + [
+            'explicit',
+            src.participant.label or '',
+            dst.participant.label or '',
+            1,
+            t.formed_wave,
+            t.active_wave1,
+            t.active_wave2,
+            t.removed_at,
+        ]
+
+    # Behavioral ties: derive per session, per unordered pair, from message
+    # counts in each direction (spec: "e.g. >=3 each way").
+    msgs_by_session = {}
+    for m in messages:
+        msgs_by_session.setdefault(m.player.session_id, []).append(m)
+    for session_id, session_messages in msgs_by_session.items():
+        counts = {}  # (src_idg, dst_idg) -> count
+        for m in session_messages:
+            src_idg = m.player.id_in_group
+            dst_idg = int(m.recipient_id)
+            counts[(src_idg, dst_idg)] = counts.get((src_idg, dst_idg), 0) + 1
+        seen_pairs = set()
+        for (a_idg, b_idg) in counts:
+            pair = tuple(sorted((a_idg, b_idg)))
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            a_to_b = counts.get((pair[0], pair[1]), 0)
+            b_to_a = counts.get((pair[1], pair[0]), 0)
+            if a_to_b >= 3 and b_to_a >= 3:
+                a_player = by_session_and_idg.get((session_id, pair[0]))
+                b_player = by_session_and_idg.get((session_id, pair[1]))
+                if a_player is None or b_player is None:
+                    continue
+                session = a_player.session
+                yield _config_stamp(session) + [
+                    'behavioral',
+                    a_player.participant.label or '',
+                    b_player.participant.label or '',
+                    a_to_b + b_to_a,
+                    '', '', '', '',
+                ]
+
+
+def custom_export_messages(players):
+    """Message table (spec Section 13): provenance/counts/pct_retained/
+    acceptance/ordinal -- deliberately WITHOUT sent_text, which lives only
+    in the de-identified `custom_export_corpus` table below."""
+    yield _CONFIG_STAMP_HEADER + [
+        'message_id', 'thread_id', 'ordinal_in_thread', 'sender_label',
+        'sender_opaque_id', 'recipient_label', 'recipient_opaque_id',
+        'char_count', 'word_count', 'token_count', 'provenance',
+        'edit_distance', 'pct_retained', 'acceptance', 'compose_time_ms',
+        'paste_detected', 'ai_badge_shown', 'ts',
+    ]
+
+    player_ids = {p.id for p in players}
+    by_session_and_idg = {(p.session_id, p.id_in_group): p for p in players}
+    messages = [m for m in Message.filter() if m.player_id in player_ids]
+
+    for m in messages:
+        sender = m.player
+        session = sender.session
+        recipient = by_session_and_idg.get((sender.session_id, int(m.recipient_id)))
+        recipient_label = recipient.participant.label or '' if recipient else ''
+        sender_label = sender.participant.label or ''
+        yield _config_stamp(session) + [
+            m.id,
+            m.thread_id,
+            m.ordinal_in_thread,
+            sender_label,
+            opaque_id(session.code, sender_label or sender.participant.code),
+            recipient_label,
+            opaque_id(session.code, recipient_label or recipient.participant.code) if recipient else '',
+            m.char_count,
+            m.word_count,
+            m.token_count,
+            m.provenance,
+            m.edit_distance,
+            m.pct_retained,
+            m.acceptance,
+            m.compose_time_ms,
+            m.paste_detected,
+            m.ai_badge_shown,
+            m.ts,
+        ]
+
+
+def custom_export_corpus(players):
+    """De-identified text corpus (spec Section 13: 'handles -> opaque ids'
+    -- the one export carrying raw sent_text). message_id/dyad/opaque_author
+    /ordinal/sent_text is the spec's exact column list; session/wave/
+    condition are added since they're needed to filter/group and don't
+    themselves identify anyone."""
+    yield _CONFIG_STAMP_HEADER + ['message_id', 'dyad', 'opaque_author', 'ordinal', 'sent_text']
+
+    player_ids = {p.id for p in players}
+    by_session_and_idg = {(p.session_id, p.id_in_group): p for p in players}
+    messages = [m for m in Message.filter() if m.player_id in player_ids]
+
+    for m in messages:
+        sender = m.player
+        session = sender.session
+        recipient = by_session_and_idg.get((sender.session_id, int(m.recipient_id)))
+        sender_oid = opaque_id(session.code, sender.participant.label or sender.participant.code)
+        recipient_oid = (
+            opaque_id(session.code, recipient.participant.label or recipient.participant.code)
+            if recipient else ''
+        )
+        dyad = '__'.join(sorted([sender_oid, recipient_oid])) if recipient else sender_oid
+        yield _config_stamp(session) + [
+            m.id,
+            dyad,
+            sender_oid,
+            m.ordinal_in_thread,
+            m.sent_text,
+        ]
+
+
+def custom_export_diffusion(players):
+    """Diffusion table (spec Section 13 + Section 8): adoption times,
+    exposure counts, neighbor sets, and whether the row was a seed (parsed
+    from the one-shot 'diffusion_seeded' Event payload rather than
+    re-derived from timing heuristics)."""
+    yield _CONFIG_STAMP_HEADER + [
+        'participant_label', 'opaque_id', 'item', 'adopted', 'adoption_ts',
+        'exposure_count_at_adoption', 'adopted_neighbor_ids', 'n_exposures_total',
+        'first_exposure_ts', 'seeded',
+    ]
+
+    player_ids = {p.id for p in players}
+    adoptions = {a.player_id: a for a in Adoption.filter() if a.player_id in player_ids}
+    exposures_by_pid = {}
+    for e in Exposure.filter():
+        if e.player_id in player_ids:
+            exposures_by_pid.setdefault(e.player_id, []).append(e)
+    seeded_keys = set()  # (session_id, id_in_group)
+    for e in Event.filter():
+        if e.player_id in player_ids and e.type == 'diffusion_seeded':
+            try:
+                payload = json.loads(e.payload)
+            except (ValueError, TypeError):
+                continue
+            session_id = e.player.session_id
+            for idg in payload.get('seeded_ids', []):
+                seeded_keys.add((session_id, idg))
+
+    for p in players:
+        session = p.session
+        participant = p.participant
+        label = participant.label or ''
+        adoption = adoptions.get(p.id)
+        my_exposures = sorted(exposures_by_pid.get(p.id, []), key=lambda e: e.ts)
+        yield _config_stamp(session) + [
+            label,
+            opaque_id(session.code, label or participant.code),
+            session.config.get('diffusion_item', ''),
+            adoption is not None,
+            adoption.ts if adoption else '',
+            adoption.exposure_count_at_adoption if adoption else '',
+            adoption.adopted_neighbor_ids if adoption else '[]',
+            len(my_exposures),
+            my_exposures[0].ts if my_exposures else '',
+            (p.session_id, p.id_in_group) in seeded_keys,
+        ]

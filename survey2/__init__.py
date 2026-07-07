@@ -1,9 +1,11 @@
+import hashlib
 import json
 import time
 
 from otree.api import *
 
 import formation as formation_app
+from deidentify import opaque_id
 
 doc = """
 Wave 2 post-session survey (build spec Section 11, Phase 4d).
@@ -182,3 +184,45 @@ class TrustInAI(Page):
 
 
 page_sequence = [NetworkCloseness, TrustInAI]
+
+
+# ---------------------------------------------------------------------------
+# Custom export (spec Section 13, Phase 5): survey long table. Same pattern
+# as survey1's custom_export -- see that module for the shared design notes.
+# ---------------------------------------------------------------------------
+
+def _frozen_prompt_hash() -> str:
+    return hashlib.sha256(formation_app.C.FROZEN_SYSTEM_PROMPT.encode('utf-8')).hexdigest()[:12]
+
+
+def custom_export(players):
+    yield [
+        'session_code', 'room_name', 'condition', 'wave', 'assist_model', 'frozen_prompt_hash',
+        'participant_label', 'opaque_id', 'instrument', 'target_handle', 'item_key', 'value',
+        'item_latency_ms', 'ts',
+    ]
+
+    player_ids = {p.id for p in players}
+    responses = [r for r in SurveyResponse.filter() if r.player_id in player_ids]
+
+    for r in responses:
+        player = r.player
+        session = player.session
+        cfg = session.config
+        label = player.participant.label or ''
+        yield [
+            session.code,
+            cfg.get('room_name', ''),
+            cfg.get('condition'),
+            cfg.get('wave'),
+            cfg.get('assist_model', ''),
+            _frozen_prompt_hash(),
+            label,
+            opaque_id(session.code, label or player.participant.code),
+            r.instrument,
+            r.target_handle,
+            r.item_key,
+            r.value,
+            r.item_latency_ms,
+            r.ts,
+        ]
