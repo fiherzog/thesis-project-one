@@ -76,6 +76,15 @@ class Player(BasePlayer):
         '"Knowing a message was AI-assisted would change how genuine it feels to me."',
     )
 
+    # Attention check (spec Section 12 integrity flags): a covariate/
+    # exclusion flag for analysis, never a blocker -- recorded regardless of
+    # the answer given, same as honor_check in intro/__init__.py.
+    attention_check = models.IntegerField(
+        choices=LIKERT_7,
+        widget=widgets.RadioSelectHorizontal,
+        label='To confirm you are reading carefully, please select the number 4 for this item.',
+    )
+
     item_latencies_json = models.LongStringField(blank=True)
 
 
@@ -173,14 +182,14 @@ class NetworkCloseness(Page):
 
 class TrustInAI(Page):
     form_model = 'player'
-    form_fields = ['trust_ai_1', 'trust_ai_2', 'item_latencies_json']
+    form_fields = ['trust_ai_1', 'trust_ai_2', 'attention_check', 'item_latencies_json']
 
     @staticmethod
     def before_next_page(player: Player, timeout_happened):
         log_responses(
             player,
             instrument='trust_in_ai_v1_PLACEHOLDER',
-            item_keys=['trust_ai_1', 'trust_ai_2'],
+            item_keys=['trust_ai_1', 'trust_ai_2', 'attention_check'],
         )
 
 

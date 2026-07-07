@@ -42,6 +42,14 @@ class Player(BasePlayer):
     )
     consented_at = models.FloatField(initial=0)
 
+    # Honor-check (build spec Section 12: "an honor-check consent item"):
+    # a self-report integrity item, not a gate -- recorded as a covariate/
+    # exclusion flag for analysis, never used to block participation.
+    honor_check = models.BooleanField(
+        label='I will answer all questions in this study honestly and to the best of my ability.',
+        widget=widgets.RadioSelectHorizontal,
+    )
+
     handle = models.StringField(
         label='Choose a display handle (only visible to other participants in this session):'
     )
@@ -66,12 +74,15 @@ def now_ms():
 
 class Consent(Page):
     form_model = 'player'
-    form_fields = ['consented']
+    form_fields = ['consented', 'honor_check']
 
     @staticmethod
     def error_message(player: Player, values):
         if not values['consented']:
             return 'You must indicate consent to continue with the study.'
+        # honor_check is deliberately NOT validated here -- per spec Section
+        # 12, integrity flags are covariates/exclusion flags for analysis,
+        # not blockers, so a 'False' answer is recorded, not rejected.
 
     @staticmethod
     def before_next_page(player: Player, timeout_happened):
@@ -104,6 +115,7 @@ class Tutorial(Page):
             interest_tags=player.interest_tags,
             consented=player.consented,
             consented_at=player.consented_at,
+            honor_check=player.honor_check,
         )
 
 

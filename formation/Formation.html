@@ -232,6 +232,27 @@ if (el('adopt-btn')) {
   };
 }
 
+// Idle detection (spec Section 12 integrity flags): reset the activity
+// clock on any user interaction; a periodic check reports one 'idle'
+// event per continuous idle period once it crosses the configured
+// threshold, then waits for renewed activity before it can report again.
+var idleThresholdMs = {{ idle_threshold_ms }};
+var lastActivityAt = Date.now();
+var idleReported = false;
+['click', 'keydown', 'mousemove', 'input'].forEach(function (evt) {
+  document.addEventListener(evt, function () {
+    lastActivityAt = Date.now();
+    idleReported = false;
+  });
+});
+setInterval(function () {
+  var idleMs = Date.now() - lastActivityAt;
+  if (idleMs >= idleThresholdMs && !idleReported) {
+    idleReported = true;
+    liveSend({type: 'idle', idle_ms: idleMs});
+  }
+}, 5000);
+
 liveSend({type: 'directory'});
 </script>
 {% endblock %}

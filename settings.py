@@ -39,6 +39,10 @@ SESSION_CONFIG_DEFAULTS = dict(
     diffusion_seeds=1,
     diffusion_seed_time_s=60 * 5,
     sender_disclosure_cue=False,
+    # --- integrity flags (spec Section 12) -- covariates/exclusion flags
+    # for analysis, never used to block participation or payment ---
+    idle_threshold_ms=60 * 1000,  # client reports an idle_detected event past this much continuous inactivity
+    min_interaction_messages=1,  # 'met_min_interaction' node-export flag threshold
     # Which oTree Room (see ROOMS below) this session's cohort is bound to,
     # so Wave-1 and Wave-2 sessions for the same cohort can be matched up
     # via the `crosswave` store. '' means "no Room" (e.g. ad-hoc/demo
@@ -167,6 +171,7 @@ PARTICIPANT_FIELDS = [
     'interest_tags',
     'consented',
     'consented_at',
+    'honor_check',
     # Wave-2 only: the participant's Wave-1 ties, as recovered from the
     # crosswave store by recontact -- not otherwise used by formation
     # (which reads live Tie rows), kept here mainly so downstream pages/

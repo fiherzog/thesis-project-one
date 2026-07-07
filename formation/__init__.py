@@ -790,6 +790,7 @@ class Formation(Page):
             # button at all).
             'diffusion_item': player.session.config['diffusion_item'],
             'my_adopted': is_adopted(player),
+            'idle_threshold_ms': player.session.config['idle_threshold_ms'],
         }
 
     @staticmethod
@@ -893,6 +894,15 @@ class Formation(Page):
             yield {player.id_in_group: result}
             return
 
+        if t == 'idle':
+            # Idle detection (spec Section 12 integrity flags): the client
+            # reports one event per continuous idle period once it crosses
+            # `idle_threshold_ms` (see Formation.html's activity timer) --
+            # a covariate/exclusion flag for analysis, never a blocker.
+            log_event(player, 'idle_detected', payload={'idle_ms': data.get('idle_ms', 0)})
+            yield {player.id_in_group: {'type': 'idle_ack'}}
+            return
+
         log_event(player, 'unknown_event', payload=data)
         yield {player.id_in_group: {'type': 'error', 'message': f'Unknown event type: {t}'}}
 
@@ -933,9 +943,10 @@ def custom_export_nodes(players):
     from the other ExtraModels rather than stored redundantly anywhere."""
     yield _CONFIG_STAMP_HEADER + [
         'participant_label', 'opaque_id', 'handle', 'avatar_preset', 'interest_tags',
-        'consented', 'consented_at', 'n_messages_sent', 'n_messages_received',
+        'consented', 'consented_at', 'honor_check', 'n_messages_sent', 'n_messages_received',
         'n_explicit_ties', 'adopted', 'adoption_ts', 'exposure_count_at_adoption',
         'n_exposures_total', 'ai_calls_used', 'ai_cost_spent',
+        'met_min_interaction', 'idle_events_n', 'idle_ms_total',
     ]
 
     excluded_ids, excluded_idg = tombstone.excluded_keys(players)
@@ -945,6 +956,12 @@ def custom_export_nodes(players):
     exposures = [e for e in Exposure.filter() if e.player_id in player_ids]
     adoptions = {a.player_id: a for a in Adoption.filter() if a.player_id in player_ids}
     ai_events = [e for e in AIEvent.filter() if e.player_id in player_ids]
+    # Idle detection (spec Section 12 integrity flags): aggregate from the
+    # generic Event log rather than a dedicated ExtraModel, since it's just
+    # a count + total duration, not a rich per-event record.
+    idle_events = [
+        e for e in Event.filter() if e.player_id in player_ids and e.type == 'idle_detected'
+    ]
 
     sent_by_pid = {}
     for m in messages:
@@ -966,6 +983,11 @@ def custom_export_nodes(players):
     for e in ai_events:
         ai_calls_by_pid[e.player_id] = ai_calls_by_pid.get(e.player_id, 0) + 1
         ai_cost_by_pid[e.player_id] = ai_cost_by_pid.get(e.player_id, 0.0) + e.cost_usd
+    idle_events_by_pid = {}
+    idle_ms_by_pid = {}
+    for e in idle_events:
+        idle_events_by_pid[e.player_id] = idle_events_by_pid.get(e.player_id, 0) + 1
+        idle_ms_by_pid[e.player_id] = idle_ms_by_pid.get(e.player_id, 0) + json.loads(e.payload).get('idle_ms', 0)
 
     for p in players:
         if p.id in excluded_ids:
@@ -978,6 +1000,7 @@ def custom_export_nodes(players):
             if t.kind == 'explicit' and t.removed_at == 0
         })
         adoption = adoptions.get(p.id)
+        n_messages_sent = len(sent_by_pid.get(p.id, []))
         yield _config_stamp(session) + [
             label,
             opaque_id(session.code, label or participant.code),
@@ -986,7 +1009,8 @@ def custom_export_nodes(players):
             participant.vars.get('interest_tags'),
             participant.vars.get('consented'),
             participant.vars.get('consented_at'),
-            len(sent_by_pid.get(p.id, [])),
+            participant.vars.get('honor_check'),
+            n_messages_sent,
             received_count.get((p.session_id, str(p.id_in_group)), 0),
             n_explicit_ties,
             adoption is not None,
@@ -995,6 +1019,12 @@ def custom_export_nodes(players):
             len(exposures_by_pid.get(p.id, [])),
             ai_calls_by_pid.get(p.id, 0),
             round(ai_cost_by_pid.get(p.id, 0.0), 4),
+            # Minimum-interaction gate (spec Section 12): a covariate flag
+            # for payment decisions, not an automatic blocker -- the
+            # researcher decides what to do with a False row.
+            n_messages_sent >= session.config['min_interaction_messages'],
+            idle_events_by_pid.get(p.id, 0),
+            idle_ms_by_pid.get(p.id, 0),
         ]
 
 
