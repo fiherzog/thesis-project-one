@@ -9,8 +9,8 @@ Participants join a session, build a small social network with the other partici
 cohort by exchanging live chat messages and forming explicit "connections," optionally with the
 help of an AI drafting assistant, and complete short surveys. Roughly a week later the same
 cohort is recontacted for a second wave that re-measures the network and surveys, to see how
-things evolved. The whole platform is driven by a 2 (AI-assist on/off) x 2 (disclosed/undisclosed)
-condition design (plus a control), server-side logging of every meaningful event, and a
+things evolved. The whole platform is driven by a three-condition design (control, AI-assist
+unlabeled, AI-assist disclosed), server-side logging of every meaningful event, and a
 diffusion mechanic for tracking how an adopted item spreads through the network.
 
 This repository is being built out incrementally, phase by phase, against a detailed build
@@ -19,13 +19,14 @@ committed, and pushed before moving on to the next.
 
 ## Study design at a glance
 
-- **Conditions** (`condition` in session config, never trusted from the client):
+- **Conditions** (`condition` in session config, never trusted from the client; valid values are
+  exactly `{1, 2, 3}`, enforced server-side by `formation.creating_session`):
   1. **Control** -- no AI-assist available at all.
-  2. **AI-assist, available** -- AI drafting help is on, but never disclosed to the recipient.
+  2. **AI-assist, unlabeled** -- AI drafting help is on, but never disclosed to the recipient, and
+     the sender isn't cued about it either. Participants only learn this may have happened at
+     Wave-2 debrief.
   3. **AI-assist, disclosed** -- AI-assisted messages are labeled to the recipient ("AI-assisted"
      badge), and the sender is told in advance that this will happen.
-  4. **AI-assist, undisclosed** -- AI-assist is on, but the recipient is never told, and the
-     sender isn't cued about it either. Participants only learn about this at Wave-2 debrief.
 - **Two waves**, run as two separate oTree sessions per cohort, joined via the same oTree
   **Room** so each real participant keeps a stable `participant.label` across both sessions
   (oTree's ordinary `participant.vars` do not survive across separate sessions, so anything that
@@ -52,11 +53,11 @@ and in what order, is controlled per-session by `app_sequence` in `settings.py`:
 | `formation`  | 1, 2 | The core of the study: **one** oTree live Page (not a page sequence) that runs for the whole session. Handles the participant directory, live 1:1 messaging with persistent threads, explicit "connect" ties, the AI-assist drafting flow, the disclosure badge, and the diffusion mechanic (seeding/exposure/adoption). Wave-agnostic by design -- the same code runs in both waves. |
 | `survey1`    | 1    | Wave-1 post-session surveys (placeholder instruments: network closeness, trust in AI). |
 | `survey2`    | 2    | Wave-2 re-measurement of the same instruments, for longitudinal comparison. |
-| `debrief`    | 2    | End-of-study debrief, including disclosing undisclosed AI-assist (condition 4) and an option to withdraw data. Currently a placeholder -- full hardening (withdrawal handling, integrity flags, out-of-band debrief for dropouts) is a later phase. |
+| `debrief`    | 2    | End-of-study debrief, including disclosing unlabeled AI-assist to condition-2 participants and an option to withdraw data. Currently a placeholder -- full hardening (withdrawal handling, integrity flags, out-of-band debrief for dropouts) is a later phase. |
 
 Supporting modules at the project root:
 
-- `settings.py` -- session configs (one per condition x wave, i.e. `cond{1-4}_wave{1,2}`),
+- `settings.py` -- session configs (one per condition x wave, i.e. `cond{1-3}_wave{1,2}`),
   oTree `ROOMS` definitions (one Room per condition/cohort), and shared defaults.
 - `crosswave.py` -- the cross-wave JSON store: `snapshot_wave1()` (called from `formation` at the
   end of a Wave-1 session) and `load_wave1()` (called from `recontact` at the start of Wave-2),
@@ -77,10 +78,10 @@ a real local devserver (HTTP + live-page websocket traffic) before being committ
    spend ceiling).
 4. **Phase 3** -- disclosure badge: server-computed, recomputed from `condition` + message
    provenance every time, persisted per-message so a later reload reflects what was actually
-   shown at send time; plus the sender-side disclosure cue. Completes all four conditions.
+   shown at send time; plus the sender-side disclosure cue. Completes all three conditions.
 5. **Phase 4** -- diffusion mechanic (seeding, exposure logging, adoption) and the full Wave-2
    machinery: `crosswave` store, `recontact`/`survey2`/`debrief` apps, oTree Rooms, and the
-   `cond{1-4}_wave2` session configs.
+   `cond{1-3}_wave2` session configs.
 6. **Phase 5** (planned) -- custom data export suite for analysis.
 7. **Phase 6** (planned) -- hardening: full debrief/withdrawal handling, integrity flags, edge
    cases around incomplete/dropout participants.
@@ -96,7 +97,7 @@ otree devserver
 ```
 
 Then visit `http://localhost:8000` (oTree's demo page) to create a session for any of the
-`cond{1-4}_wave{1,2}` configs, or use oTree's REST `/api/sessions` endpoint to script it.
+`cond{1-3}_wave{1,2}` configs, or use oTree's REST `/api/sessions` endpoint to script it.
 
 ## Status
 

@@ -19,7 +19,8 @@
   #ai-status { font-size: 0.85em; color: #666; min-height: 1.2em; }
   #ai-draft-btn.loading { opacity: 0.6; }
   #sender-disclosure-cue { font-size: 0.8em; color: #666; margin-top: 0.2rem; }
-  .msg .ai-badge { display: inline-block; font-size: 0.7em; color: #555; background: #fff3cd; border-radius: 4px; padding: 0 0.3rem; margin-left: 0.4rem; vertical-align: middle; }
+  #ai-disclosure-banner { font-size: 0.8em; color: #7a5b00; background: #fff3cd; border-radius: 4px; padding: 0.3rem 0.5rem; margin-bottom: 0.5rem; }
+  #ai-disclosure-banner.hidden { display: none; }
   .adopted-badge { display: inline-block; font-size: 0.7em; color: #1a5d1a; background: #d9f2d9; border-radius: 4px; padding: 0 0.3rem; margin-left: 0.3rem; vertical-align: middle; }
   #diffusion-panel { margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px solid #ddd; font-size: 0.85em; }
 </style>
@@ -33,6 +34,9 @@
   </div>
   <div id="main-pane">
     <h4 id="thread-title">Select someone from the directory to start a thread</h4>
+    {% if ai_disclosure_banner %}
+    <div id="ai-disclosure-banner" class="hidden">AI may be used to help write messages in this conversation.</div>
+    {% endif %}
     <div id="thread-messages"></div>
     <textarea id="composer" placeholder="Type a message..."></textarea>
     <div>
@@ -45,7 +49,7 @@
     <div id="ai-status"></div>
     {% endif %}
     {% if assist_enabled and sender_disclosure_cue %}
-    <div id="sender-disclosure-cue">Note: if you use AI-assist, your recipient will see that this message was AI-assisted.</div>
+    <div id="sender-disclosure-cue">Note: your recipient is told that AI may be used to help write messages in this conversation, whether or not you personally use it.</div>
     {% endif %}
     <div id="diffusion-panel">
       {% if my_adopted %}
@@ -128,20 +132,12 @@ function openThread(peerId, peerHandle) {
   liveSend({type: 'open_thread', peer: peerId});
 }
 
-function appendMessage(senderId, body, badgeShown, senderAdopted) {
+function appendMessage(senderId, body, senderAdopted) {
   var div = document.createElement('div');
   div.className = 'msg ' + (senderId === myId ? 'mine' : 'theirs');
   var textSpan = document.createElement('span');
   textSpan.textContent = body;
   div.appendChild(textSpan);
-  // Disclosure badge (spec Section 7): condition 3 only, server-computed
-  // and never trusted from anywhere else -- just rendered here as-is.
-  if (badgeShown) {
-    var badge = document.createElement('span');
-    badge.className = 'ai-badge';
-    badge.textContent = 'AI-assisted';
-    div.appendChild(badge);
-  }
   // Diffusion mechanic (spec Section 8): mark messages from an
   // already-adopted peer so the adoption state is visible in-thread too.
   if (senderAdopted) {
@@ -159,10 +155,15 @@ function liveRecv(data) {
     renderDirectory(data.players);
   } else if (data.type === 'thread_history') {
     el('thread-messages').innerHTML = '';
-    data.messages.forEach(function (m) { appendMessage(m.sender, m.body, m.ai_badge_shown, data.peer_adopted && m.sender !== myId); });
+    // General disclosure banner (spec Section 7): a per-conversation
+    // notice, not a per-message tag -- shown once per thread open, based
+    // only on the viewer's own condition.
+    var banner = el('ai-disclosure-banner');
+    if (banner) banner.classList.toggle('hidden', !data.ai_disclosure_banner);
+    data.messages.forEach(function (m) { appendMessage(m.sender, m.body, data.peer_adopted && m.sender !== myId); });
     if (data.peer_adopted) liveSend({type: 'seen', seen_ids: [data.peer]});
   } else if (data.type === 'incoming') {
-    if (data.peer === currentPeer) appendMessage(data.peer, data.body, data.ai_badge_shown, data.adopted);
+    if (data.peer === currentPeer) appendMessage(data.peer, data.body, data.adopted);
   } else if (data.type === 'ack') {
     if (data.peer === currentPeer) appendMessage(myId, data.body);
   } else if (data.type === 'connect_ack') {

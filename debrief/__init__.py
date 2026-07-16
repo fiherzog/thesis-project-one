@@ -10,9 +10,10 @@ doc = """
 Wave 2 debrief (build spec Section 11, Phase 4d placeholder).
 
 Last page of the Wave-2 app_sequence. Explains the manipulation (including,
-critically, condition 4's undisclosed AI-assist -- this is the first and
+critically, condition 2's unlabeled AI-assist -- this is the first and
 only point in the study where those participants are told AI assistance
-was ever involved) and offers withdrawal via the `withdrawn` field.
+may have been involved in messages they received) and offers withdrawal
+via the `withdrawn` field.
 
 THIS IS A PLACEHOLDER, explicitly deferred to Phase 6 per the roadmap
 ("Phase 6 -- Hardening: ... debrief, withdrawal, integrity flags"). Still
@@ -73,12 +74,12 @@ class Debrief(Page):
     def vars_for_template(player: Player):
         condition = get_condition(player)
         return {
-            # Condition 4 (AI-assist, undisclosed) is the only condition
+            # Condition 2 (AI-assist, unlabeled) is the only condition
             # where this page is the first time the participant learns
             # some of their partners' messages may have been AI-assisted
             # without being labeled as such -- see module docstring.
-            'was_undisclosed_ai': condition == 4,
-            'had_ai_assist': condition in (2, 3, 4),
+            'was_undisclosed_ai': condition == 2,
+            'had_ai_assist': condition in (2, 3),
         }
 
     @staticmethod
@@ -123,8 +124,8 @@ def custom_export(players):
             opaque_id(session.code, label or p.participant.code),
             p.withdrawn,
             p.withdrawn_at,
-            condition == 4,
-            condition in (2, 3, 4),
+            condition == 2,
+            condition in (2, 3),
         ]
 
 
@@ -195,8 +196,8 @@ def custom_export_noncompleters(players):
         cfg = session.config
         label = participant.label or ''
         condition = cfg.get('condition')
-        had_ai_assist = condition in (2, 3, 4)
-        was_undisclosed_ai = condition == 4
+        had_ai_assist = condition in (2, 3)
+        was_undisclosed_ai = condition == 2
         yield [
             session.code,
             cfg.get('room_name', ''),

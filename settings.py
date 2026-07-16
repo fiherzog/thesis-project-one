@@ -13,15 +13,21 @@ from os import environ
 #   - `condition` and `wave` come from session config, never from the client.
 #   - The Anthropic API key is read server-side only (see formation app).
 #
-# Phase 4 status: all four Wave-1 conditions (cond1 = control, cond2 =
-# AI-assist/no disclosure UI, cond3 = AI-assist/disclosed, cond4 =
-# AI-assist/undisclosed -- see formation app for the badge logic) now each
-# have a matching Wave-2 config (`cond{1..4}_wave2`, app_sequence =
-# [recontact, formation, survey2, debrief]). Each cond's wave1/wave2 pair
-# shares one oTree Room (`room_name` config key + ROOMS below) so the same
-# real participant keeps the same `participant.label` across both waves --
-# that label is the join key into the `crosswave` JSON store (see
-# formation app's before_next_page snapshot hook and recontact app).
+# Phase 4 status: all three Wave-1 conditions (cond1 = control, cond2 =
+# AI-assist/unlabeled, cond3 = AI-assist/disclosed -- see formation app for
+# the badge logic) now each have a matching Wave-2 config (`cond{1..3}_wave2`,
+# app_sequence = [recontact, formation, survey2, debrief]). Each cond's
+# wave1/wave2 pair shares one oTree Room (`room_name` config key + ROOMS
+# below) so the same real participant keeps the same `participant.label`
+# across both waves -- that label is the join key into the `crosswave` JSON
+# store (see formation app's before_next_page snapshot hook and recontact
+# app).
+#
+# Valid `condition` values are exactly {1, 2, 3}; formation.creating_session
+# enforces this at session-creation time (defence in depth against a
+# hand-edited config or a scripted REST session-creation call), since these
+# SESSION_CONFIGS are just the known-good set, not the only way to create a
+# session.
 # ---------------------------------------------------------------------------
 
 SESSION_CONFIG_DEFAULTS = dict(
@@ -78,21 +84,10 @@ SESSION_CONFIGS = [
         condition=3,
         wave=1,
         room_name='room_cond3',
-        # Sender-side half of the cond3-vs-cond4 manipulation (spec
+        # Sender-side half of the cond2-vs-cond3 manipulation (spec
         # Section 7 / Decision G): cond3 senders are told their
         # AI-assisted messages will be labeled to the recipient.
         sender_disclosure_cue=True,
-    ),
-    dict(
-        name='cond4_wave1',
-        display_name='Condition 4 (AI-assist, undisclosed) -- Wave 1',
-        app_sequence=['intro', 'formation', 'survey1'],
-        num_demo_participants=6,
-        condition=4,
-        wave=1,
-        room_name='room_cond4',
-        # sender_disclosure_cue left at its default (False): the badge
-        # never shows in cond4, so there's nothing to cue the sender about.
     ),
     dict(
         name='cond1_wave2',
@@ -122,20 +117,11 @@ SESSION_CONFIGS = [
         room_name='room_cond3',
         sender_disclosure_cue=True,
     ),
-    dict(
-        name='cond4_wave2',
-        display_name='Condition 4 (AI-assist, undisclosed) -- Wave 2',
-        app_sequence=['recontact', 'formation', 'survey2', 'debrief'],
-        num_demo_participants=6,
-        condition=4,
-        wave=2,
-        room_name='room_cond4',
-    ),
 ]
 
 # oTree Rooms (spec Section 10): one Room per cohort/condition so the same
 # real participant keeps the same participant.label across that cohort's
-# Wave-1 and Wave-2 sessions. All four share one label file here since Room
+# Wave-1 and Wave-2 sessions. All three share one label file here since Room
 # namespaces are independent -- the same label string in two different
 # Rooms refers to two different people, so there's no collision.
 ROOMS = [
@@ -152,11 +138,6 @@ ROOMS = [
     dict(
         name='room_cond3',
         display_name='Room -- Condition 3 (AI-assist, disclosed)',
-        participant_label_file='_rooms/test_labels.txt',
-    ),
-    dict(
-        name='room_cond4',
-        display_name='Room -- Condition 4 (AI-assist, undisclosed)',
         participant_label_file='_rooms/test_labels.txt',
     ),
 ]
